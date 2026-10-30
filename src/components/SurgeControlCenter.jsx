@@ -27,15 +27,12 @@ export default function SurgeControlCenter({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       
-      {/* Top PRD KPIs Summary */}
+      {/* Top KPIs Summary */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
         <div className="card" style={{ padding: '1.1rem 1.4rem' }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', fontWeight: 600 }}>Wait Time Model Accuracy</span>
           <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--primary)', marginTop: '0.3rem' }}>
             91.8%
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 600, marginTop: '0.2rem' }}>
-            Target: &gt; 88% within ±7 mins (PRD KPI 6.1)
           </div>
         </div>
 
@@ -44,9 +41,6 @@ export default function SurgeControlCenter({
           <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--secondary)', marginTop: '0.3rem' }}>
             +36.4%
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 600, marginTop: '0.2rem' }}>
-            Satisfaction boost via Micro-Wait (PRD KPI 6.2)
-          </div>
         </div>
 
         <div className="card" style={{ padding: '1.1rem 1.4rem' }}>
@@ -54,18 +48,12 @@ export default function SurgeControlCenter({
           <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--slate-900)', marginTop: '0.3rem' }}>
             -23.2%
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 600, marginTop: '0.2rem' }}>
-            Turnaround time reduction (PRD KPI 6.3)
-          </div>
         </div>
 
         <div className="card" style={{ padding: '1.1rem 1.4rem' }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', fontWeight: 600 }}>Zero Unmanaged Deterioration</span>
           <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--secondary)', marginTop: '0.3rem' }}>
             100%
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 600, marginTop: '0.2rem' }}>
-            0 unmanaged waiting room events (PRD KPI 6.4)
           </div>
         </div>
       </div>
