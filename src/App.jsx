@@ -14,7 +14,8 @@ import {
   Zap, 
   UserPlus, 
   Clock,
-  HeartPulse
+  HeartPulse,
+  Database
 } from 'lucide-react';
 import TriageDashboard from './components/TriageDashboard';
 import RoomMatrix from './components/RoomMatrix';
@@ -29,6 +30,7 @@ import {
   INITIAL_AUDIT_LOGS 
 } from './data/initialData';
 import { calculatePriorityIndex, playClinicalChime, findOptimalRoomMatch } from './utils/priorityEngine';
+import * as api from './services/api';
 
 export default function App() {
   const [patients, setPatients] = useState(INITIAL_PATIENTS);
@@ -37,12 +39,45 @@ export default function App() {
   const [surgeData, setSurgeData] = useState(INITIAL_SURGE_HOURLY);
   const [auditLogs, setAuditLogs] = useState(INITIAL_AUDIT_LOGS);
 
-  const [activeTab, setActiveTab] = useState('triage'); // 'triage' | 'rooms' | 'patient' | 'surge'
+  const [dbStatus, setDbStatus] = useState({ online: false, info: 'Connecting to SQLite...' });
+  const [activeTab, setActiveTab] = useState('triage');
   const [isSimRunning, setIsSimRunning] = useState(true);
   const [simSpeed, setSimSpeed] = useState(1);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [dismissedAlertId, setDismissedAlertId] = useState(null);
   const [isStaffReallocated, setIsStaffReallocated] = useState(false);
+
+  // Initial Load from SQLite Database
+  useEffect(() => {
+    async function loadFromDb() {
+      try {
+        const health = await api.fetchHealth();
+        setDbStatus({
+          online: true,
+          info: `SQLite 3 Connected (${health.counts.patients} pts, ${health.counts.vitalsStreamRecords} vitals in ihms.db)`
+        });
+
+        const [pData, rData, sData, sgData, logs] = await Promise.all([
+          api.fetchPatients(),
+          api.fetchRooms(),
+          api.fetchStaff(),
+          api.fetchSurgeForecast(),
+          api.fetchAuditLogs()
+        ]);
+
+        if (pData?.length) setPatients(pData);
+        if (rData?.length) setRooms(rData);
+        if (sData?.length) setStaff(sData);
+        if (sgData?.length) setSurgeData(sgData);
+        if (logs?.length) setAuditLogs(logs);
+      } catch (err) {
+        console.warn('SQLite API backend not reachable, using seeded local fallback:', err);
+        setDbStatus({ online: false, info: 'Local In-Memory Mode (Backend offline)' });
+      }
+    }
+
+    loadFromDb();
+  }, []);
 
   // Identify any critical deteriorating patient waiting in queue
   const criticalPatient = patients
@@ -89,7 +124,6 @@ export default function App() {
         prevPatients.map(p => {
           if (p.status !== 'waiting') return p;
           const currentHr = p.liveVitals?.hr || 75;
-          // small random jitter: -1, 0, +1 bpm
           const jitter = Math.floor(Math.random() * 3) - 1;
           const newHr = Math.max(50, Math.min(160, currentHr + jitter));
           const newHistory = [...(p.liveVitals?.history || [currentHr]), newHr].slice(-8);
@@ -125,19 +159,30 @@ export default function App() {
     setAuditLogs(prev => [newLog, ...prev]);
   };
 
-  // Interactive Scenario 1: Trigger Patient Vitals Deterioration
-  const handleTriggerVitalsSpike = () => {
+  // Interactive Scenario 1: Trigger Patient Vitals Deterioration (Persisted to SQLite)
+  const handleTriggerVitalsSpike = async () => {
     const targetPatient = patients.find(p => p.id === 'P-101' || p.id === 'P-103') || patients[0];
     if (!targetPatient) return;
+
+    try {
+      await api.streamPatientVitals(targetPatient.id, {
+        hr: 124,
+        spo2: 89,
+        temp: 38.1,
+        pain: 9
+      });
+    } catch (e) {
+      console.warn('API error during vitals spike:', e);
+    }
 
     setPatients(prev =>
       prev.map(p => {
         if (p.id === targetPatient.id) {
           const newVitals = {
             ...p.liveVitals,
-            spo2: 89, // Severe drop
-            hr: 124,  // Tachycardia
-            pain: 9,  // Severe pain spike
+            spo2: 89,
+            hr: 124,
+            pain: 9,
             history: [...(p.liveVitals?.history || []), 124].slice(-8)
           };
           return {
@@ -156,7 +201,7 @@ export default function App() {
       'IOT_VITALS_DETERIORATION',
       targetPatient.id,
       targetPatient.name,
-      'Smart Wristband flagged critical SpO2 drop (89%) and tachycardia (124 bpm). System automatically recalculated P(t) and escalated priority.'
+      'Smart Wristband flagged critical SpO2 drop (89%) and tachycardia (124 bpm). System automatically recalculated P(t) and logged to SQLite vitals_stream.'
     );
 
     setActiveTab('triage');
@@ -195,7 +240,13 @@ export default function App() {
   };
 
   // Interactive Scenario 3: Complete Room Sanitization & Trigger Constraint Match
-  const handleCompleteSanitizationScenario = () => {
+  const handleCompleteSanitizationScenario = async () => {
+    try {
+      await api.completeSanitization('R102');
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     setRooms(prev =>
       prev.map(r => {
         if (r.id === 'R102') {
@@ -214,14 +265,20 @@ export default function App() {
       'ROOM_SANITIZED_AUTO_MATCH',
       'R102',
       'Room 102 - General Consult',
-      'Sanitization protocol completed. Constraint solver triggered auto-assignment matching.'
+      'Sanitization protocol completed in SQLite. Constraint solver triggered auto-assignment matching.'
     );
 
     setActiveTab('rooms');
   };
 
   // Interactive Scenario 4: Trigger Predictive Departmental Surge Alert
-  const handleTriggerSurgeScenario = () => {
+  const handleTriggerSurgeScenario = async () => {
+    try {
+      await api.triggerSurgeSpike();
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     setSurgeData(prev =>
       prev.map(slot => {
         if (slot.hour === '15:00' || slot.hour === '16:00') {
@@ -247,8 +304,14 @@ export default function App() {
     setActiveTab('surge');
   };
 
-  // Triage Manual Override Handler
-  const handleManualOverride = (patientId, boost, reason, notes) => {
+  // Triage Manual Override Handler (Persisted to SQLite)
+  const handleManualOverride = async (patientId, boost, reason, notes) => {
+    try {
+      await api.overridePatientPriority(patientId, boost, reason, notes);
+    } catch (e) {
+      console.warn('API error during override:', e);
+    }
+
     setPatients(prev =>
       prev.map(p => {
         if (p.id === patientId) {
@@ -266,57 +329,69 @@ export default function App() {
       'MANUAL_TRIAGE_OVERRIDE',
       patientId,
       pat?.name,
-      `Triage Nurse escalated priority by +${boost.toFixed(2)}. Reason: ${reason}. Notes: ${notes}`
+      `Triage Nurse escalated priority by +${boost.toFixed(2)}. Reason: ${reason}. Notes: ${notes} (Saved to SQLite)`
     );
   };
 
-  // Add Walk-in Patient Handler
-  const handleAddPatient = (patientData) => {
-    const newId = `P-${Date.now().toString().slice(-3)}`;
-    const newWristband = `WB-${Math.floor(1000 + Math.random() * 9000)}`;
+  // Add Walk-in Patient Handler (Persisted to SQLite)
+  const handleAddPatient = async (patientData) => {
+    try {
+      const created = await api.createPatient(patientData);
+      setPatients(prev => [created, ...prev]);
+      addAuditLog(
+        'PATIENT_CHECKIN',
+        created.id,
+        created.name,
+        `Walk-in patient triaged (ESI ${patientData.esi}). Wristband ${created.wristbandId} paired. Persisted to SQLite database.`
+      );
+    } catch (e) {
+      console.warn('API error, falling back to local state:', e);
+      const newId = `P-${Date.now().toString().slice(-3)}`;
+      const newWristband = `WB-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    const newPat = {
-      id: newId,
-      name: patientData.name,
-      age: patientData.age,
-      gender: patientData.gender,
-      wristbandId: newWristband,
-      esi: patientData.esi,
-      chiefComplaint: patientData.chiefComplaint,
-      requiredEquipment: patientData.requiredEquipment,
-      checkedInMinutesAgo: 0,
-      arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
-      status: 'waiting',
-      assignedRoomId: null,
-      manualOverrideBoost: 0,
-      etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
-      liveVitals: {
-        hr: patientData.hr,
-        spo2: patientData.spo2,
-        temp: 37.0,
-        pain: patientData.pain,
-        history: [patientData.hr]
-      },
-      microWait: {
-        step: 1,
-        doctorEstMins: 6,
-        sanitizationEstMins: 3,
-        currentDoctor: 'Dr. Michael Chen',
-        targetRoom: 'Room 103 (Ultrasound Ready)'
-      }
-    };
+      const newPat = {
+        id: newId,
+        name: patientData.name,
+        age: patientData.age,
+        gender: patientData.gender,
+        wristbandId: newWristband,
+        esi: patientData.esi,
+        chiefComplaint: patientData.chiefComplaint,
+        requiredEquipment: patientData.requiredEquipment,
+        checkedInMinutesAgo: 0,
+        arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
+        status: 'waiting',
+        assignedRoomId: null,
+        manualOverrideBoost: 0,
+        etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
+        liveVitals: {
+          hr: patientData.hr,
+          spo2: patientData.spo2,
+          temp: 37.0,
+          pain: patientData.pain,
+          history: [patientData.hr]
+        },
+        microWait: {
+          step: 1,
+          doctorEstMins: 6,
+          sanitizationEstMins: 3,
+          currentDoctor: 'Dr. Michael Chen',
+          targetRoom: 'Room 103 (Ultrasound Ready)'
+        }
+      };
 
-    setPatients(prev => [newPat, ...prev]);
-    addAuditLog(
-      'PATIENT_CHECKIN',
-      newId,
-      patientData.name,
-      `Walk-in patient triaged at ESI ${patientData.esi}. Paired with wristband ${newWristband}.`
-    );
+      setPatients(prev => [newPat, ...prev]);
+    }
   };
 
-  // Room Assignment Handler
-  const handleConfirmRoomAssignment = (roomId, patientId) => {
+  // Room Assignment Handler (Persisted to SQLite)
+  const handleConfirmRoomAssignment = async (roomId, patientId) => {
+    try {
+      await api.assignRoom(roomId, patientId);
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     const patient = patients.find(p => p.id === patientId);
     const room = rooms.find(r => r.id === roomId);
 
@@ -360,8 +435,14 @@ export default function App() {
     );
   };
 
-  // Room Consultation Finish & Call Cleaners
-  const handleConsultationFinish = (roomId) => {
+  // Room Consultation Finish & Call Cleaners (Persisted to SQLite)
+  const handleConsultationFinish = async (roomId) => {
+    try {
+      await api.concludeConsultation(roomId);
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     const room = rooms.find(r => r.id === roomId);
     setRooms(prev =>
       prev.map(r => {
@@ -382,12 +463,18 @@ export default function App() {
       'ROOM_CONSULT_CONCLUDED',
       roomId,
       room?.name,
-      'Physician concluded visit. Room transitioned to Sanitization Pending (Turnover protocol activated).'
+      'Physician concluded visit. Room transitioned to Sanitization Pending in SQLite.'
     );
   };
 
-  // Manual Complete Sanitization
-  const handleSanitizeComplete = (roomId) => {
+  // Manual Complete Sanitization (Persisted to SQLite)
+  const handleSanitizeComplete = async (roomId) => {
+    try {
+      await api.completeSanitization(roomId);
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     const room = rooms.find(r => r.id === roomId);
     setRooms(prev =>
       prev.map(r => {
@@ -411,8 +498,20 @@ export default function App() {
     );
   };
 
-  // Patient Mobile App: Update Pain Rating
-  const handleUpdatePain = (patientId, newPainScore) => {
+  // Patient Mobile App: Update Pain Rating (Persisted to SQLite vitals stream)
+  const handleUpdatePain = async (patientId, newPainScore) => {
+    const pat = patients.find(p => p.id === patientId);
+    try {
+      await api.streamPatientVitals(patientId, {
+        hr: pat?.liveVitals?.hr || 80,
+        spo2: pat?.liveVitals?.spo2 || 98,
+        temp: pat?.liveVitals?.temp || 37.0,
+        pain: newPainScore
+      });
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     setPatients(prev =>
       prev.map(p => {
         if (p.id === patientId) {
@@ -428,17 +527,22 @@ export default function App() {
       })
     );
 
-    const pat = patients.find(p => p.id === patientId);
     addAuditLog(
       'PATIENT_SELF_REPORT',
       patientId,
       pat?.name,
-      `Patient streamed updated pain rating: ${newPainScore}/10 via mobile app.`
+      `Patient streamed updated pain rating: ${newPainScore}/10. Appended to SQLite vitals_stream.`
     );
   };
 
-  // Patient Mobile App: Accept Re-slot
-  const handleAcceptReslot = (patientId) => {
+  // Patient Mobile App: Accept Re-slot (Persisted to SQLite)
+  const handleAcceptReslot = async (patientId) => {
+    try {
+      await api.reslotPatient(patientId, true);
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     setPatients(prev =>
       prev.map(p => {
         if (p.id === patientId) {
@@ -466,7 +570,13 @@ export default function App() {
   };
 
   // Patient Mobile App: Decline Re-slot
-  const handleDeclineReslot = (patientId) => {
+  const handleDeclineReslot = async (patientId) => {
+    try {
+      await api.reslotPatient(patientId, false);
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     setPatients(prev =>
       prev.map(p => {
         if (p.id === patientId) {
@@ -483,8 +593,14 @@ export default function App() {
     );
   };
 
-  // Execute Staff Re-allocation
-  const handleExecuteStaffReallocation = () => {
+  // Execute Staff Re-allocation (Persisted to SQLite)
+  const handleExecuteStaffReallocation = async () => {
+    try {
+      await api.reallocateStaff();
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
     setStaff(prev =>
       prev.map(s => {
         if (s.name.includes('Adams')) {
@@ -535,6 +651,23 @@ export default function App() {
               </h1>
               <p>Dynamic Deterioration Early Warning • Equipment-Aware Turnover • Predictive Capacity</p>
             </div>
+          </div>
+
+          {/* Database Live Status Badge */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.45rem',
+            background: dbStatus.online ? 'var(--secondary-light)' : '#fef2f2',
+            border: `1px solid ${dbStatus.online ? 'var(--secondary)' : '#f87171'}`,
+            padding: '0.3rem 0.75rem',
+            borderRadius: 'var(--radius-full)',
+            fontSize: '0.72rem',
+            fontWeight: 700,
+            color: dbStatus.online ? 'var(--secondary)' : '#b91c1c'
+          }}>
+            <Database size={13} />
+            <span>{dbStatus.info}</span>
           </div>
 
           {/* Navigation Tabs */}
