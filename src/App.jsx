@@ -14,8 +14,7 @@ import {
   Zap, 
   UserPlus, 
   Clock,
-  HeartPulse,
-  Database
+  HeartPulse
 } from 'lucide-react';
 import TriageDashboard from './components/TriageDashboard';
 import RoomMatrix from './components/RoomMatrix';
@@ -39,7 +38,6 @@ export default function App() {
   const [surgeData, setSurgeData] = useState(INITIAL_SURGE_HOURLY);
   const [auditLogs, setAuditLogs] = useState(INITIAL_AUDIT_LOGS);
 
-  const [dbStatus, setDbStatus] = useState({ online: false, info: 'Connecting to SQLite...' });
   const [activeTab, setActiveTab] = useState('triage');
   const [isSimRunning, setIsSimRunning] = useState(true);
   const [simSpeed, setSimSpeed] = useState(1);
@@ -51,12 +49,6 @@ export default function App() {
   useEffect(() => {
     async function loadFromDb() {
       try {
-        const health = await api.fetchHealth();
-        setDbStatus({
-          online: true,
-          info: `SQLite 3 Connected (${health.counts.patients} pts, ${health.counts.vitalsStreamRecords} vitals in ihms.db)`
-        });
-
         const [pData, rData, sData, sgData, logs] = await Promise.all([
           api.fetchPatients(),
           api.fetchRooms(),
@@ -72,7 +64,6 @@ export default function App() {
         if (logs?.length) setAuditLogs(logs);
       } catch (err) {
         console.warn('SQLite API backend not reachable, using seeded local fallback:', err);
-        setDbStatus({ online: false, info: 'Local In-Memory Mode (Backend offline)' });
       }
     }
 
@@ -651,23 +642,6 @@ export default function App() {
               </h1>
               <p>Dynamic Deterioration Early Warning • Equipment-Aware Turnover • Predictive Capacity</p>
             </div>
-          </div>
-
-          {/* Database Live Status Badge */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.45rem',
-            background: dbStatus.online ? 'var(--secondary-light)' : '#fef2f2',
-            border: `1px solid ${dbStatus.online ? 'var(--secondary)' : '#f87171'}`,
-            padding: '0.3rem 0.75rem',
-            borderRadius: 'var(--radius-full)',
-            fontSize: '0.72rem',
-            fontWeight: 700,
-            color: dbStatus.online ? 'var(--secondary)' : '#b91c1c'
-          }}>
-            <Database size={13} />
-            <span>{dbStatus.info}</span>
           </div>
 
           {/* Navigation Tabs */}
