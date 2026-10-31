@@ -117,6 +117,117 @@ export default function App() {
   const [dismissedAlertId, setDismissedAlertId] = useState(null);
   const [isStaffReallocated, setIsStaffReallocated] = useState(false);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
+  const [selectedWaitingPatientId, setSelectedWaitingPatientId] = useState(null);
+
+  // Strictly resolve the active patient record for the currently logged-in patient
+  const loggedInPatient = React.useMemo(() => {
+    if (!currentUser || currentUser.role !== 'patient') return null;
+
+    // 1. Direct match by patient_id in patients waiting/active queue
+    if (currentUser.patient_id) {
+      const match = patients.find(
+        p => p.id === currentUser.patient_id || p.wristbandId === currentUser.patient_id
+      );
+      if (match) return match;
+    }
+
+    // 2. Match by exact or case-insensitive patient name
+    if (currentUser.name) {
+      const matchName = patients.find(
+        p => p.name && p.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase()
+      );
+      if (matchName) return matchName;
+    }
+
+    // 3. Match from appointments table if scheduled
+    if (appointments && appointments.length) {
+      const matchAppt = appointments.find(
+        a => (currentUser.patient_id && a.id === currentUser.patient_id) ||
+             (a.patientName && currentUser.name && a.patientName.trim().toLowerCase() === currentUser.name.trim().toLowerCase())
+      );
+      if (matchAppt) {
+        return {
+          id: matchAppt.id,
+          name: matchAppt.patientName,
+          age: matchAppt.age || 35,
+          gender: matchAppt.gender || 'Female',
+          wristbandId: matchAppt.digitalPassId || `WB-${Math.floor(1000 + Math.random() * 9000)}`,
+          esi: matchAppt.esi || 3,
+          chiefComplaint: matchAppt.chiefComplaint || 'Self-Scheduled Consultation',
+          requiredEquipment: matchAppt.requiredEquipment || [],
+          checkedInMinutesAgo: 0,
+          arrivalTime: matchAppt.appointmentTime || '19:30',
+          status: matchAppt.status === 'Checked-In' ? 'waiting' : 'scheduled',
+          assignedRoomId: null,
+          manualOverrideBoost: 0,
+          etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
+          liveVitals: {
+            hr: 76,
+            spo2: 98,
+            temp: 36.9,
+            pain: matchAppt.painLevel || 2,
+            deltaV: 0.0,
+            isCritical: false,
+            history: [74, 75, 76, 75, 76]
+          },
+          microWait: {
+            step: 1,
+            doctorEstMins: matchAppt.estimatedWaitMins || 6,
+            sanitizationEstMins: 2,
+            currentDoctor: 'Attending Physician',
+            targetRoom: matchAppt.department || 'Examination Suite'
+          }
+        };
+      }
+    }
+
+    // 4. Fallback: Synthesize personal verified patient profile for this exact logged-in user
+    return {
+      id: currentUser.patient_id || `P-${currentUser.id ? currentUser.id.slice(-4) : 'USER'}`,
+      name: currentUser.name,
+      age: 36,
+      gender: 'Patient',
+      wristbandId: currentUser.patient_id?.startsWith('WB-') ? currentUser.patient_id : `WB-${Math.floor(2000 + Math.random() * 7000)}`,
+      esi: 3,
+      chiefComplaint: currentUser.department ? `Intake: ${currentUser.department}` : 'Registered Patient Health Monitoring',
+      requiredEquipment: [],
+      checkedInMinutesAgo: 6,
+      arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
+      status: 'waiting',
+      assignedRoomId: null,
+      manualOverrideBoost: 0,
+      etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
+      liveVitals: {
+        hr: 78,
+        spo2: 98,
+        temp: 37.0,
+        pain: 2,
+        deltaV: 0.0,
+        isCritical: false,
+        history: [76, 77, 78, 77, 78]
+      },
+      microWait: {
+        step: 1,
+        doctorEstMins: 6,
+        sanitizationEstMins: 2,
+        currentDoctor: 'Dr. Michael Chen',
+        targetRoom: 'Room 103 (Diagnostic Suite)'
+      }
+    };
+  }, [currentUser, patients, appointments]);
+
+  // Active patient for waiting view (strictly loggedInPatient for patient role, or selected/top waiting patient for doctor)
+  const activePatientForWaiting = React.useMemo(() => {
+    if (currentUser?.role === 'patient') {
+      return loggedInPatient;
+    }
+    if (selectedWaitingPatientId) {
+      const match = patients.find(p => p.id === selectedWaitingPatientId);
+      if (match) return match;
+    }
+    return patients.find(p => p.status === 'waiting') || patients[0];
+  }, [currentUser, loggedInPatient, selectedWaitingPatientId, patients]);
+
 
   // Initial Load from SQLite Database & Real-Time SSE Listener
   useEffect(() => {
@@ -927,118 +1038,6 @@ export default function App() {
   const isDoctor = role === 'doctor';
   const isReceptionist = role === 'receptionist';
   const isPatient = role === 'patient';
-
-  // Strictly resolve the active patient record for the currently logged-in patient
-  const loggedInPatient = React.useMemo(() => {
-    if (!currentUser || currentUser.role !== 'patient') return null;
-
-    // 1. Direct match by patient_id in patients waiting/active queue
-    if (currentUser.patient_id) {
-      const match = patients.find(
-        p => p.id === currentUser.patient_id || p.wristbandId === currentUser.patient_id
-      );
-      if (match) return match;
-    }
-
-    // 2. Match by exact or case-insensitive patient name
-    if (currentUser.name) {
-      const matchName = patients.find(
-        p => p.name && p.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase()
-      );
-      if (matchName) return matchName;
-    }
-
-    // 3. Match from appointments table if scheduled
-    if (appointments && appointments.length) {
-      const matchAppt = appointments.find(
-        a => (currentUser.patient_id && a.id === currentUser.patient_id) ||
-             (a.patientName && currentUser.name && a.patientName.trim().toLowerCase() === currentUser.name.trim().toLowerCase())
-      );
-      if (matchAppt) {
-        return {
-          id: matchAppt.id,
-          name: matchAppt.patientName,
-          age: matchAppt.age || 35,
-          gender: matchAppt.gender || 'Female',
-          wristbandId: matchAppt.digitalPassId || `WB-${Math.floor(1000 + Math.random() * 9000)}`,
-          esi: matchAppt.esi || 3,
-          chiefComplaint: matchAppt.chiefComplaint || 'Self-Scheduled Consultation',
-          requiredEquipment: matchAppt.requiredEquipment || [],
-          checkedInMinutesAgo: 0,
-          arrivalTime: matchAppt.appointmentTime || '19:30',
-          status: matchAppt.status === 'Checked-In' ? 'waiting' : 'scheduled',
-          assignedRoomId: null,
-          manualOverrideBoost: 0,
-          etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
-          liveVitals: {
-            hr: 76,
-            spo2: 98,
-            temp: 36.9,
-            pain: matchAppt.painLevel || 2,
-            deltaV: 0.0,
-            isCritical: false,
-            history: [74, 75, 76, 75, 76]
-          },
-          microWait: {
-            step: 1,
-            doctorEstMins: matchAppt.estimatedWaitMins || 6,
-            sanitizationEstMins: 2,
-            currentDoctor: 'Attending Physician',
-            targetRoom: matchAppt.department || 'Examination Suite'
-          }
-        };
-      }
-    }
-
-    // 4. Fallback: Synthesize personal verified patient profile for this exact logged-in user
-    return {
-      id: currentUser.patient_id || `P-${currentUser.id ? currentUser.id.slice(-4) : 'USER'}`,
-      name: currentUser.name,
-      age: 36,
-      gender: 'Patient',
-      wristbandId: currentUser.patient_id?.startsWith('WB-') ? currentUser.patient_id : `WB-${Math.floor(2000 + Math.random() * 7000)}`,
-      esi: 3,
-      chiefComplaint: currentUser.department ? `Intake: ${currentUser.department}` : 'Registered Patient Health Monitoring',
-      requiredEquipment: [],
-      checkedInMinutesAgo: 6,
-      arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
-      status: 'waiting',
-      assignedRoomId: null,
-      manualOverrideBoost: 0,
-      etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
-      liveVitals: {
-        hr: 78,
-        spo2: 98,
-        temp: 37.0,
-        pain: 2,
-        deltaV: 0.0,
-        isCritical: false,
-        history: [76, 77, 78, 77, 78]
-      },
-      microWait: {
-        step: 1,
-        doctorEstMins: 6,
-        sanitizationEstMins: 2,
-        currentDoctor: 'Dr. Michael Chen',
-        targetRoom: 'Room 103 (Diagnostic Suite)'
-      }
-    };
-  }, [currentUser, patients, appointments]);
-
-  // Track selected patient when a doctor inspects the live patient waiting screen
-  const [selectedWaitingPatientId, setSelectedWaitingPatientId] = useState(null);
-
-  // Active patient for waiting view (strictly loggedInPatient for patient role, or selected/top waiting patient for doctor)
-  const activePatientForWaiting = React.useMemo(() => {
-    if (currentUser?.role === 'patient') {
-      return loggedInPatient;
-    }
-    if (selectedWaitingPatientId) {
-      const match = patients.find(p => p.id === selectedWaitingPatientId);
-      if (match) return match;
-    }
-    return patients.find(p => p.status === 'waiting') || patients[0];
-  }, [currentUser, loggedInPatient, selectedWaitingPatientId, patients]);
 
   return (
     <div className="app-container">
