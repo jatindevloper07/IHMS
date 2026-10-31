@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Smartphone, 
   Heart, 
@@ -9,26 +9,52 @@ import {
   CheckCircle2, 
   AlertCircle, 
   ChevronRight, 
-  Sparkles,
-  Wifi,
-  BatteryCharging,
-  Sliders,
-  Send,
-  User
+  Sparkles, 
+  Wifi, 
+  BatteryCharging, 
+  Sliders, 
+  Send, 
+  User, 
+  ShieldCheck, 
+  Stethoscope, 
+  Users, 
+  ShieldAlert, 
+  TrendingUp 
 } from 'lucide-react';
-import { calculatePriorityIndex } from '../utils/priorityEngine';
+import { calculatePriorityIndex, calculateEstimatedWaitToConsult } from '../utils/priorityEngine';
 
 export default function PatientMobileApp({ 
-  patients, 
+  patients = [], 
+  currentPatient: propPatient,
   onUpdatePain, 
   onAcceptReslot, 
-  onDeclineReslot 
+  onDeclineReslot,
+  initialPatientId,
+  isPatientRole = false,
+  isDoctorRole = false,
+  doctorUser = null,
+  onSelectPatient = null
 }) {
-  const [selectedPatientId, setSelectedPatientId] = useState(patients[0]?.id || 'P-101');
-  const [reportedPain, setReportedPain] = useState(6);
+  const waitingPatientsList = (patients || []).filter(p => p.status === 'waiting');
+  const currentPatient = propPatient || waitingPatientsList[0] || patients?.[0] || {
+    id: 'P-101',
+    name: 'Verified Patient',
+    wristbandId: 'WB-ACTIVE',
+    esi: 3,
+    status: 'waiting',
+    liveVitals: { hr: 78, spo2: 98, pain: 4 },
+    microWait: { step: 1, doctorEstMins: 4, sanitizationEstMins: 3 }
+  };
+
+  const [reportedPain, setReportedPain] = useState(currentPatient?.liveVitals?.pain ?? 5);
   const [showPainSubmittedToast, setShowPainSubmittedToast] = useState(false);
 
-  const currentPatient = patients.find(p => p.id === selectedPatientId) || patients[0];
+  useEffect(() => {
+    if (currentPatient?.liveVitals?.pain !== undefined) {
+      setReportedPain(currentPatient.liveVitals.pain);
+    }
+  }, [currentPatient?.id, currentPatient?.liveVitals?.pain]);
+
   const priorityInfo = calculatePriorityIndex(currentPatient);
   const vitals = currentPatient?.liveVitals || {};
   const microWait = currentPatient?.microWait || { step: 1, doctorEstMins: 4, sanitizationEstMins: 3 };
@@ -36,50 +62,282 @@ export default function PatientMobileApp({
 
   const handlePainSubmit = (e) => {
     e.preventDefault();
-    onUpdatePain(currentPatient.id, reportedPain);
-    setShowPainSubmittedToast(true);
-    setTimeout(() => setShowPainSubmittedToast(false), 3000);
+    if (currentPatient?.id) {
+      onUpdatePain(currentPatient.id, reportedPain);
+      setShowPainSubmittedToast(true);
+      setTimeout(() => setShowPainSubmittedToast(false), 3000);
+    }
   };
 
+  // Determine active doctor name for display
+  const attendingDoctorName = doctorUser?.name || microWait.currentDoctor || 'Dr. Michael Chen, MD';
+
+  // Calculate dynamic queue metrics for the waiting lounge transparency cards
+  const sortedWaiting = (patients || [])
+    .filter(p => p.status === 'waiting')
+    .map(p => {
+      const calc = calculatePriorityIndex(p);
+      return { 
+        ...p, 
+        checkedInMinutesAgo: calc.waitMinutes ?? p.checkedInMinutesAgo ?? 0,
+        ...calc 
+      };
+    })
+    .sort((a, b) => b.priorityIndex - a.priorityIndex);
+
+  const waitingPatients = sortedWaiting.map((p, index) => ({
+    ...p,
+    queueRank: index + 1,
+    estimatedWaitToDoctor: calculateEstimatedWaitToConsult(index, p.esi)
+  }));
+
+  const avgElapsedWait = waitingPatients.length > 0 
+    ? Math.round(waitingPatients.reduce((acc, p) => acc + (p.checkedInMinutesAgo || 0), 0) / waitingPatients.length)
+    : 0;
+
+  const avgEstConsult = waitingPatients.length > 0
+    ? Math.round(waitingPatients.reduce((acc, p) => acc + (p.estimatedWaitToDoctor || 0), 0) / waitingPatients.length)
+    : 0;
+
+  const patientQueueIndex = waitingPatients.findIndex(p => p.id === currentPatient?.id);
+  const patientRank = patientQueueIndex >= 0 ? patientQueueIndex + 1 : 1;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem' }}>
-      {/* Patient Switcher Bar */}
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.25rem' }}>
+      {/* 1. DOCTOR PANEL SUPERVISION BAR (Visible when Doctor is inspecting patient waiting lounge) */}
+      {isDoctorRole && (
+        <div style={{ 
+          background: 'white', 
+          padding: '0.9rem 1.4rem', 
+          borderRadius: 'var(--radius-md)', 
+          border: '1.5px solid var(--primary)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.75rem',
+          width: '100%',
+          maxWidth: '800px',
+          boxShadow: '0 4px 15px -2px rgba(15, 82, 186, 0.12)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+              <div style={{
+                width: 36,
+                height: 36,
+                borderRadius: 9,
+                background: 'var(--primary-light)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--primary)',
+                flexShrink: 0
+              }}>
+                <Stethoscope size={18} />
+              </div>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <strong style={{ fontSize: '0.9rem', color: 'var(--slate-900)' }}>
+                    Doctor Panel • Live Patient Waiting Screen Inspector
+                  </strong>
+                  <span className="badge" style={{ background: 'var(--primary-light)', color: 'var(--primary)', fontSize: '0.65rem', fontWeight: 700 }}>
+                    Supervision Mode
+                  </span>
+                </div>
+                <p style={{ margin: 0, fontSize: '0.73rem', color: 'var(--slate-500)' }}>
+                  Assigned Physician: <strong style={{ color: 'var(--primary)' }}>{attendingDoctorName}</strong> • Patient Queue View
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span className="live-clock-badge">
+                <span className="live-clock-dot" /> LIVE QUEUE SYNC
+              </span>
+              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--slate-600)', background: 'var(--slate-100)', padding: '0.2rem 0.5rem', borderRadius: 4 }}>
+                {waitingPatientsList.length} Waiting in Lounge
+              </span>
+            </div>
+          </div>
+
+          {/* Quick Switcher Chips: Switch between any waiting patient on doctor panel */}
+          {waitingPatientsList.length > 0 && (
+            <div style={{ borderTop: '1px solid var(--slate-100)', paddingTop: '0.6rem' }}>
+              <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--slate-500)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '0.35rem' }}>
+                Select Waiting Patient to inspect their mobile & wristband screen:
+              </span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                {waitingPatientsList.map((p, idx) => {
+                  const isSelected = p.id === currentPatient.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => onSelectPatient?.(p.id)}
+                      style={{
+                        padding: '0.25rem 0.65rem',
+                        fontSize: '0.72rem',
+                        borderRadius: 'var(--radius-full)',
+                        border: isSelected ? '1.5px solid var(--primary)' : '1px solid var(--slate-200)',
+                        background: isSelected ? 'var(--primary-light)' : '#ffffff',
+                        color: isSelected ? 'var(--primary)' : 'var(--slate-700)',
+                        fontWeight: isSelected ? 800 : 500,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        transition: 'all 0.15s ease'
+                      }}
+                      title={`Inspect ${p.name}'s live waiting interface`}
+                    >
+                      <span>#{idx + 1}</span>
+                      <span>{p.name}</span>
+                      <code style={{ fontSize: '0.65rem', color: isSelected ? 'var(--primary)' : 'var(--slate-400)' }}>
+                        {p.wristbandId}
+                      </code>
+                      {p.isDeteriorating && (
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--alert-crimson)' }} title="Vitals Escalation" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 2. PATIENT SESSION CARD */}
       <div style={{ 
         background: 'white', 
-        padding: '0.85rem 1.5rem', 
+        padding: '0.85rem 1.4rem', 
         borderRadius: 'var(--radius-md)', 
-        border: '1px solid var(--slate-200)',
+        border: '1.5px solid rgba(0, 168, 150, 0.35)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: '1rem',
         width: '100%',
         maxWidth: '800px',
-        boxShadow: 'var(--shadow-sm)'
+        boxShadow: '0 4px 15px -2px rgba(0, 168, 150, 0.12)'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-          <User size={18} color="var(--primary)" />
-          <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--slate-800)' }}>
-            Viewing Patient Mobile App As:
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div style={{
+            width: 38,
+            height: 38,
+            borderRadius: '50%',
+            background: 'var(--secondary-light)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--secondary)',
+            flexShrink: 0
+          }}>
+            <ShieldCheck size={20} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--slate-800)' }}>
+                {currentPatient?.name || 'Verified Patient'}
+              </span>
+              <span style={{
+                fontSize: '0.625rem',
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                background: 'rgba(0, 168, 150, 0.1)',
+                color: 'var(--secondary)',
+                padding: '0.12rem 0.45rem',
+                borderRadius: 'var(--radius-sm)'
+              }}>
+                {isDoctorRole ? `Doctor Panel Active (${attendingDoctorName})` : 'Active Login Session'}
+              </span>
+            </div>
+            <span style={{ fontSize: '0.74rem', color: 'var(--slate-500)', fontWeight: 500 }}>
+              Smart Wristband: <strong style={{ color: 'var(--slate-700)' }}>{currentPatient?.wristbandId || 'WB-ACTIVE'}</strong> • ESI Priority: Level {currentPatient?.esi || 3} • 24/7 Telemetry Stream Active
+            </span>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--slate-50)', padding: '0.35rem 0.75rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--slate-200)' }}>
+          <span className="sim-clock-pulse" />
+          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--slate-700)' }}>
+            Status: {currentPatient?.status === 'in-consultation' ? '🩺 In Consultation' : '⏱️ Waiting in Lounge'}
           </span>
         </div>
-        <select
-          className="form-select"
-          style={{ width: 'auto', minWidth: '260px', padding: '0.4rem 0.8rem' }}
-          value={selectedPatientId}
-          onChange={(e) => {
-            setSelectedPatientId(e.target.value);
-            const pat = patients.find(p => p.id === e.target.value);
-            if (pat) setReportedPain(pat.liveVitals?.pain || 5);
-          }}
-          id="patient-mobile-switcher"
-        >
-          {patients.map(p => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.wristbandId}) — ESI {p.esi} {p.etaDelay?.isDelayed ? '• [In Transit Delay]' : ''}
-            </option>
-          ))}
-        </select>
+      </div>
+
+      {/* 3. LIVE WAITING QUEUE & TELEMETRY METRIC CARDS (Active Waiting Queue, Active Vitals Deteriorations, Average Waiting Time) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem', width: '100%', maxWidth: '800px' }}>
+        {/* Card 1: Active Waiting Queue */}
+        <div className="card" style={{ padding: '1.1rem 1.4rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', fontWeight: 600 }}>Active Waiting Queue</span>
+            <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--primary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)' }}>
+              <Clock size={18} />
+            </div>
+          </div>
+          <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--slate-900)', marginTop: '0.4rem' }}>
+            {waitingPatients.length} <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--slate-500)' }}>Patients in Lobby</span>
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--slate-500)', marginTop: '0.3rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Formula: <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--primary)', fontWeight: 700 }}>P(t) = 0.5·U + 0.2·T + 0.3·ΔV</code></span>
+            <span className="badge" style={{ background: 'var(--primary-light)', color: 'var(--primary)', fontWeight: 700, fontSize: '0.65rem' }}>
+              Your Rank: #{patientRank}
+            </span>
+          </div>
+        </div>
+
+        {/* Card 2: Active Vitals Deteriorations */}
+        <div className="card" style={{ padding: '1.1rem 1.4rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', fontWeight: 600 }}>Active Vitals Deteriorations</span>
+            <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--alert-crimson-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--alert-crimson)' }}>
+              <ShieldAlert size={18} />
+            </div>
+          </div>
+          <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--alert-crimson)', marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {waitingPatients.filter(p => p.isDeteriorating).length}
+            {waitingPatients.filter(p => p.isDeteriorating).length > 0 ? (
+              <span className="badge badge-deterioration-alert" style={{ fontSize: '0.65rem' }}>
+                LIVE ESCALATION
+              </span>
+            ) : (
+              <span className="badge" style={{ background: 'rgba(0, 168, 150, 0.12)', color: 'var(--secondary)', fontSize: '0.65rem', fontWeight: 700 }}>
+                SAFE TELEMETRY
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--slate-500)', marginTop: '0.3rem' }}>
+            Continuous IoT Wristband streaming every 15s
+          </div>
+        </div>
+
+        {/* Card 3: Average Waiting Time */}
+        <div className="card" style={{ padding: '1.1rem 1.4rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', fontWeight: 600 }}>Average Waiting Time</span>
+              <span className="live-wait-badge" title="Second-by-second real-time streaming telemetry">
+                <span className="live-wait-dot" /> LIVE 1s TICK
+              </span>
+            </div>
+            <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--secondary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--secondary)' }}>
+              <TrendingUp size={18} />
+            </div>
+          </div>
+          <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--slate-900)', marginTop: '0.4rem', display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
+            <span>{waitingPatients.length > 0 ? avgElapsedWait : 0}</span>
+            <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--slate-500)' }}>mins elapsed</span>
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 600, marginTop: '0.3rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>
+              {waitingPatients.length > 0 
+                ? `Next Consult: ~${waitingPatients[0]?.estimatedWaitToDoctor || 3}m (Avg Est. ~${avgEstConsult}m)`
+                : 'Queue Empty • 0 waiting'}
+            </span>
+            <span style={{ color: 'var(--slate-500)', fontWeight: 500, fontSize: '0.7rem' }}>
+              Across {waitingPatients.length} waiting patient{waitingPatients.length === 1 ? '' : 's'}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Realistic Mobile Device Frame */}
@@ -144,6 +402,42 @@ export default function PatientMobileApp({
           {/* Scrollable Phone Body */}
           <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, overflowY: 'auto' }}>
             
+            {/* Live Waiting Queue Transparency inside phone app */}
+            <div style={{
+              background: '#f8fafc',
+              border: '1px solid var(--slate-200)',
+              borderRadius: 'var(--radius-md)',
+              padding: '0.75rem',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.45rem' }}>
+                <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--slate-800)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <Clock size={13} color="var(--primary)" />
+                  Live Waiting Queue Transparency
+                </span>
+                <span className="live-wait-badge" style={{ fontSize: '0.62rem' }}>
+                  <span className="live-wait-dot" /> 1s TICK
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem', textAlign: 'center' }}>
+                <div style={{ background: '#ffffff', padding: '0.45rem 0.25rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--slate-100)' }}>
+                  <span style={{ fontSize: '0.62rem', color: 'var(--slate-500)', display: 'block', fontWeight: 600 }}>In Queue</span>
+                  <strong style={{ fontSize: '1.05rem', color: 'var(--primary)', fontFamily: 'var(--font-mono)' }}>{waitingPatients.length}</strong>
+                  <span style={{ fontSize: '0.58rem', color: 'var(--slate-400)', display: 'block' }}># {patientRank} in line</span>
+                </div>
+                <div style={{ background: '#ffffff', padding: '0.45rem 0.25rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--slate-100)' }}>
+                  <span style={{ fontSize: '0.62rem', color: 'var(--slate-500)', display: 'block', fontWeight: 600 }}>Avg Wait</span>
+                  <strong style={{ fontSize: '1.05rem', color: 'var(--slate-800)', fontFamily: 'var(--font-mono)' }}>{avgElapsedWait}m</strong>
+                  <span style={{ fontSize: '0.58rem', color: 'var(--secondary)', display: 'block' }}>Active lounge</span>
+                </div>
+                <div style={{ background: '#ffffff', padding: '0.45rem 0.25rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--slate-100)' }}>
+                  <span style={{ fontSize: '0.62rem', color: 'var(--slate-500)', display: 'block', fontWeight: 600 }}>Next Consult</span>
+                  <strong style={{ fontSize: '1.05rem', color: 'var(--slate-800)', fontFamily: 'var(--font-mono)' }}>~{currentPatient?.microWait?.doctorEstMins || 4}m</strong>
+                  <span style={{ fontSize: '0.58rem', color: 'var(--slate-400)', display: 'block' }}>Est. call time</span>
+                </div>
+              </div>
+            </div>
+
             {/* Smart Delay Assistant Banner (Novel Feature 3.5) */}
             {etaDelay.isDelayed && (
               <div style={{
@@ -241,10 +535,10 @@ export default function PatientMobileApp({
                   </div>
                   <div>
                     <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--slate-900)' }}>
-                      Physician Finalizing Prior Patient
+                      Physician Reviewing Triage Chart
                     </div>
                     <div style={{ fontSize: '0.7rem', color: 'var(--slate-500)', marginTop: '0.1rem' }}>
-                      {microWait.currentDoctor} is completing notes • ~{microWait.doctorEstMins} mins
+                      <strong style={{ color: 'var(--primary)' }}>{attendingDoctorName}</strong> is reviewing telemetry on Doctor Panel • ~{microWait.doctorEstMins || 4} mins
                     </div>
                   </div>
                 </div>

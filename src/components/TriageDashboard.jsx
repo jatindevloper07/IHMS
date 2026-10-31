@@ -7,15 +7,17 @@ import {
   ArrowUpRight, 
   UserPlus, 
   ShieldAlert, 
-  HelpCircle,
-  Stethoscope,
-  TrendingUp,
-  Sliders,
-  CheckCircle2,
-  X
+  Stethoscope, 
+  TrendingUp, 
+  Sliders, 
+  CheckCircle2, 
+  X,
+  Trash2,
+  Hourglass,
+  Smartphone
 } from 'lucide-react';
 import Sparkline from './Sparkline';
-import { calculatePriorityIndex, WEIGHTS } from '../utils/priorityEngine';
+import { calculatePriorityIndex, calculateEstimatedWaitToConsult, WEIGHTS } from '../utils/priorityEngine';
 
 export default function TriageDashboard({ 
   patients, 
@@ -24,12 +26,20 @@ export default function TriageDashboard({
   onManualOverride, 
   onFastTrackPatient,
   onAddPatient,
+  onRemovePatient,
+  onUpdateWaitTime,
+  onViewPatientWaitingScreen,
+  doctorUser,
   simTime
 }) {
   const [selectedPatientForOverride, setSelectedPatientForOverride] = useState(null);
   const [overrideReason, setOverrideReason] = useState('Vitals Spike');
   const [overrideNotes, setOverrideNotes] = useState('');
   const [overrideBoost, setOverrideBoost] = useState(0.25);
+  const [overrideWaitMins, setOverrideWaitMins] = useState(0);
+
+  const [editingWaitPatientId, setEditingWaitPatientId] = useState(null);
+  const [editWaitValue, setEditWaitValue] = useState('');
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newPatient, setNewPatient] = useState({
@@ -41,46 +51,75 @@ export default function TriageDashboard({
     requiredEquipment: ['Ultrasound'],
     hr: 82,
     spo2: 98,
-    pain: 4
+    pain: 4,
+    arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
+    checkedInMinutesAgo: 0
   });
 
-  // Filter patients who are currently waiting
-  const waitingPatients = patients
+  // Filter patients who are currently waiting & dynamically calculate effective waiting time and consult estimates
+  const sortedWaiting = patients
     .filter(p => p.status === 'waiting')
     .map(p => {
       const calc = calculatePriorityIndex(p);
-      return { ...p, ...calc };
+      return { 
+        ...p, 
+        checkedInMinutesAgo: calc.waitMinutes ?? p.checkedInMinutesAgo ?? 0,
+        ...calc 
+      };
     })
     // Sort descending by priority index P(t)
     .sort((a, b) => b.priorityIndex - a.priorityIndex);
+
+  // Re-calculate dynamic estimated wait to physician consultation for each rank position
+  // When a patient is added or removed, all estimated wait times and average adjust accordingly!
+  const waitingPatients = sortedWaiting.map((p, index) => ({
+    ...p,
+    queueRank: index + 1,
+    estimatedWaitToDoctor: calculateEstimatedWaitToConsult(index, p.esi)
+  }));
+
+  const avgElapsedWait = waitingPatients.length > 0 
+    ? Math.round(waitingPatients.reduce((acc, p) => acc + (p.checkedInMinutesAgo || 0), 0) / waitingPatients.length)
+    : 0;
+
+  const avgEstConsult = waitingPatients.length > 0
+    ? Math.round(waitingPatients.reduce((acc, p) => acc + (p.estimatedWaitToDoctor || 0), 0) / waitingPatients.length)
+    : 0;
 
   const handleOpenOverride = (patient) => {
     setSelectedPatientForOverride(patient);
     setOverrideReason('Vitals Spike');
     setOverrideNotes('');
     setOverrideBoost(0.25);
+    setOverrideWaitMins(patient.checkedInMinutesAgo || 0);
   };
 
   const handleSaveOverride = (e) => {
     e.preventDefault();
     if (!selectedPatientForOverride) return;
     onManualOverride(selectedPatientForOverride.id, overrideBoost, overrideReason, overrideNotes);
+    if (overrideWaitMins !== selectedPatientForOverride.checkedInMinutesAgo) {
+      onUpdateWaitTime?.(selectedPatientForOverride.id, overrideWaitMins);
+    }
     setSelectedPatientForOverride(null);
   };
 
   const handleAddSubmit = (e) => {
     e.preventDefault();
     if (!newPatient.name.trim()) return;
+    const nowTimeStr = new Date().toTimeString().split(' ')[0].slice(0, 5);
     onAddPatient({
-      name: newPatient.name,
+      name: newPatient.name.trim(),
       age: parseInt(newPatient.age) || 35,
       gender: newPatient.gender,
-      esi: parseInt(newPatient.esi),
-      chiefComplaint: newPatient.chiefComplaint || 'Acute symptoms requiring evaluation',
+      esi: parseInt(newPatient.esi) || 3,
+      chiefComplaint: newPatient.chiefComplaint.trim() || 'Acute symptoms requiring evaluation',
       requiredEquipment: newPatient.requiredEquipment,
       hr: parseInt(newPatient.hr) || 80,
       spo2: parseInt(newPatient.spo2) || 98,
-      pain: parseInt(newPatient.pain) || 3
+      pain: parseInt(newPatient.pain) || 3,
+      arrivalTime: newPatient.arrivalTime || nowTimeStr,
+      checkedInMinutesAgo: parseInt(newPatient.checkedInMinutesAgo) || 0
     });
     setIsAddModalOpen(false);
     setNewPatient({
@@ -92,7 +131,9 @@ export default function TriageDashboard({
       requiredEquipment: ['Ultrasound'],
       hr: 82,
       spo2: 98,
-      pain: 4
+      pain: 4,
+      arrivalTime: nowTimeStr,
+      checkedInMinutesAgo: 0
     });
   };
 
@@ -149,18 +190,29 @@ export default function TriageDashboard({
 
         <div className="card" style={{ padding: '1.1rem 1.4rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', fontWeight: 600 }}>Average Waiting Time</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', fontWeight: 600 }}>Average Waiting Time</span>
+              <span className="live-wait-badge" title="Second-by-second real-time streaming telemetry">
+                <span className="live-wait-dot" /> LIVE 1s TICK
+              </span>
+            </div>
             <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--secondary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--secondary)' }}>
               <TrendingUp size={18} />
             </div>
           </div>
-          <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--slate-900)', marginTop: '0.4rem' }}>
-            {waitingPatients.length > 0 
-              ? Math.round(waitingPatients.reduce((acc, p) => acc + (p.checkedInMinutesAgo || 0), 0) / waitingPatients.length)
-              : 0} <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--slate-500)' }}>mins</span>
+          <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--slate-900)', marginTop: '0.4rem', display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
+            <span>{waitingPatients.length > 0 ? avgElapsedWait : 0}</span>
+            <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--slate-500)' }}>mins elapsed</span>
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 600, marginTop: '0.3rem' }}>
-            ↓ 23% vs standard static FIFO triage
+          <div style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 600, marginTop: '0.3rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>
+              {waitingPatients.length > 0 
+                ? `Next Consult: ~${waitingPatients[0]?.estimatedWaitToDoctor || 3}m (Avg Est. ~${avgEstConsult}m)`
+                : 'Queue Empty • 0 waiting'}
+            </span>
+            <span style={{ color: 'var(--slate-500)', fontWeight: 500, fontSize: '0.7rem' }}>
+              Across {waitingPatients.length} waiting patient{waitingPatients.length === 1 ? '' : 's'}
+            </span>
           </div>
         </div>
       </div>
@@ -198,7 +250,7 @@ export default function TriageDashboard({
                 <th>Live Vitals & Trend</th>
                 <th>Alert Status</th>
                 <th>Required Equipment</th>
-                <th>Elapsed Wait</th>
+                <th>Elapsed Wait & Est. Consult</th>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
@@ -337,20 +389,134 @@ export default function TriageDashboard({
                         </div>
                       </td>
 
-                      {/* Elapsed Wait */}
+                      {/* Elapsed Wait & Est. Consult - Live Telemetry & Real-Time Adjusters */}
                       <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
-                          <Clock size={13} color="var(--slate-400)" />
-                          <span>{patient.checkedInMinutesAgo} min</span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
+                            <Clock size={13} color="var(--primary)" />
+                            {editingWaitPatientId === patient.id ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                <input
+                                  className="wait-edit-input"
+                                  type="number"
+                                  min="0"
+                                  max="240"
+                                  value={editWaitValue}
+                                  autoFocus
+                                  onChange={e => setEditWaitValue(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      onUpdateWaitTime?.(patient.id, parseInt(editWaitValue, 10) || 0);
+                                      setEditingWaitPatientId(null);
+                                    } else if (e.key === 'Escape') {
+                                      setEditingWaitPatientId(null);
+                                    }
+                                  }}
+                                  onBlur={() => {
+                                    onUpdateWaitTime?.(patient.id, parseInt(editWaitValue, 10) || 0);
+                                    setEditingWaitPatientId(null);
+                                  }}
+                                />
+                                <span style={{ fontSize: '0.72rem', color: 'var(--slate-500)', fontWeight: 600 }}>min</span>
+                              </div>
+                            ) : (
+                              <span 
+                                style={{ 
+                                  fontWeight: 700, 
+                                  cursor: 'pointer',
+                                  color: (patient.checkedInMinutesAgo || 0) >= 30 
+                                    ? 'var(--alert-crimson)' 
+                                    : (patient.checkedInMinutesAgo || 0) >= 20 
+                                      ? 'var(--warning-amber)' 
+                                      : 'var(--slate-800)' 
+                                }}
+                                title="Click to edit waiting time directly in real time"
+                                onClick={() => {
+                                  setEditingWaitPatientId(patient.id);
+                                  setEditWaitValue(patient.checkedInMinutesAgo || 0);
+                                }}
+                              >
+                                {patient.checkedInMinutesAgo || 0}m {patient.waitSeconds !== undefined ? `${patient.waitSeconds % 60 < 10 ? '0' : ''}${patient.waitSeconds % 60}s` : '00s'}
+                              </span>
+                            )}
+
+                            <span className="live-wait-badge" title="Second-by-second continuous streaming telemetry">
+                              <span className="live-wait-dot" /> LIVE
+                            </span>
+                          </div>
+
+                          {/* Interactive Real-Time Quick Adjusters */}
+                          <div className="wait-adjust-group">
+                            <button
+                              type="button"
+                              className="wait-adjust-btn"
+                              title="Decrease waiting time by 5 minutes in real time"
+                              onClick={() => onUpdateWaitTime?.(patient.id, Math.max(0, (patient.checkedInMinutesAgo || 0) - 5))}
+                            >
+                              -5m
+                            </button>
+                            <button
+                              type="button"
+                              className="wait-adjust-btn"
+                              title="Increase waiting time by 5 minutes in real time (boosts priority)"
+                              onClick={() => onUpdateWaitTime?.(patient.id, (patient.checkedInMinutesAgo || 0) + 5)}
+                            >
+                              +5m
+                            </button>
+                            <button
+                              type="button"
+                              className="wait-adjust-btn"
+                              style={{ color: 'var(--primary)', borderColor: 'rgba(15, 82, 186, 0.3)' }}
+                              title="Type custom waiting minutes in real time"
+                              onClick={() => {
+                                setEditingWaitPatientId(patient.id);
+                                setEditWaitValue(patient.checkedInMinutesAgo || 0);
+                              }}
+                            >
+                              Edit
+                            </button>
+                            {patient.arrivalTime && (
+                              <span style={{ fontSize: '0.65rem', color: 'var(--slate-400)', fontFamily: 'var(--font-sans)', marginLeft: '0.2rem' }}>
+                                ({patient.arrivalTime})
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Est. Doctor Consult */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.72rem', color: 'var(--primary)', fontWeight: 600 }}>
+                            <Hourglass size={11} />
+                            <span>Est. Doctor: ~{patient.estimatedWaitToDoctor || 4}m (Queue #{patient.queueRank})</span>
+                          </div>
                         </div>
                       </td>
 
                       {/* Actions */}
                       <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.4rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.35rem' }}>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ 
+                              padding: '0.3rem 0.55rem', 
+                              fontSize: '0.72rem', 
+                              color: 'var(--secondary)', 
+                              borderColor: 'rgba(0, 168, 150, 0.35)',
+                              background: 'var(--secondary-light)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.25rem'
+                            }}
+                            title="Inspect live Patient Waiting Interface as seen on their mobile app & wristband"
+                            onClick={() => onViewPatientWaitingScreen?.(patient.id)}
+                            id={`waiting-view-btn-${patient.id}`}
+                          >
+                            <Smartphone size={12} />
+                            <span>Waiting View</span>
+                          </button>
+
                           <button
                             className="btn btn-secondary"
-                            style={{ padding: '0.3rem 0.6rem', fontSize: '0.72rem' }}
+                            style={{ padding: '0.3rem 0.55rem', fontSize: '0.72rem' }}
                             title="Triage Manual Override with justification audit"
                             onClick={() => handleOpenOverride(patient)}
                             id={`override-btn-${patient.id}`}
@@ -361,13 +527,34 @@ export default function TriageDashboard({
 
                           <button
                             className="btn btn-primary"
-                            style={{ padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+                            style={{ padding: '0.3rem 0.6rem', fontSize: '0.72rem' }}
                             title="Fast-Track into next compatible consultation room"
                             onClick={() => onFastTrackPatient(patient.id)}
                             id={`fasttrack-btn-${patient.id}`}
                           >
                             <ArrowUpRight size={13} />
-                            Assign Room
+                            Assign
+                          </button>
+
+                          <button
+                            className="btn btn-secondary"
+                            style={{ 
+                              padding: '0.3rem 0.5rem', 
+                              fontSize: '0.72rem', 
+                              color: 'var(--alert-crimson)', 
+                              borderColor: 'rgba(217, 4, 41, 0.25)',
+                              background: '#fff1f2'
+                            }}
+                            title="Remove or discharge patient from queue"
+                            onClick={() => {
+                              if (window.confirm(`Discharge ${patient.name} from the waiting queue? Average waiting time will recalculate immediately.`)) {
+                                onRemovePatient?.(patient.id, patient.name);
+                              }
+                            }}
+                            id={`remove-btn-${patient.id}`}
+                          >
+                            <Trash2 size={12} />
+                            Remove
                           </button>
                         </div>
                       </td>
@@ -436,6 +623,27 @@ export default function TriageDashboard({
                   </div>
                   <small style={{ fontSize: '0.72rem', color: 'var(--slate-500)' }}>
                     Boosts position in dynamic priority queue immediately.
+                  </small>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Adjust Elapsed Waiting Time (Minutes)</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <input 
+                      type="range" 
+                      min="0" 
+                      max="120" 
+                      step="1"
+                      value={overrideWaitMins}
+                      onChange={(e) => setOverrideWaitMins(parseInt(e.target.value, 10) || 0)}
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--slate-800)', width: '60px' }}>
+                      {overrideWaitMins} mins
+                    </span>
+                  </div>
+                  <small style={{ fontSize: '0.72rem', color: 'var(--slate-500)' }}>
+                    Simulates actual elapsed triage wait time; dynamically adjusts starvation weighting.
                   </small>
                 </div>
 
@@ -548,6 +756,32 @@ export default function TriageDashboard({
                       value={newPatient.chiefComplaint}
                       onChange={e => setNewPatient({ ...newPatient, chiefComplaint: e.target.value })}
                       required 
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Arrival / Intake Time</label>
+                    <input 
+                      type="text" 
+                      className="form-input" 
+                      placeholder="e.g. 19:30"
+                      value={newPatient.arrivalTime}
+                      onChange={e => setNewPatient({ ...newPatient, arrivalTime: e.target.value })}
+                      required 
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Initial Elapsed Wait (Minutes)</label>
+                    <input 
+                      type="number" 
+                      min="0"
+                      max="180"
+                      className="form-input" 
+                      placeholder="0 (Just arrived)"
+                      value={newPatient.checkedInMinutesAgo}
+                      onChange={e => setNewPatient({ ...newPatient, checkedInMinutesAgo: e.target.value })}
                     />
                   </div>
                 </div>

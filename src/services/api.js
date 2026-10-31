@@ -118,3 +118,162 @@ export async function fetchAuditLogs() {
   if (!res.ok) throw new Error('Failed to fetch audit logs');
   return res.json();
 }
+
+export async function fetchAppointments() {
+  const res = await fetch(`${API_BASE}/appointments`);
+  if (!res.ok) throw new Error('Failed to fetch appointments');
+  return res.json();
+}
+
+export async function createAppointment(appointmentData) {
+  const res = await fetch(`${API_BASE}/appointments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(appointmentData)
+  });
+  if (!res.ok) throw new Error('Failed to register appointment');
+  return res.json();
+}
+
+export async function checkInAppointment(appointmentId) {
+  const res = await fetch(`${API_BASE}/appointments/${appointmentId}/checkin`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error('Failed to check in appointment');
+  return res.json();
+}
+
+export async function cancelAppointment(appointmentId) {
+  const res = await fetch(`${API_BASE}/appointments/${appointmentId}/cancel`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error('Failed to cancel appointment');
+  return res.json();
+}
+
+export async function fetchAuthUsers() {
+  const res = await fetch(`${API_BASE}/auth/users`);
+  if (!res.ok) throw new Error('Failed to fetch auth users');
+  return res.json();
+}
+
+export async function loginUser(credentials) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Authentication failed' }));
+    throw new Error(err.error || 'Authentication failed');
+  }
+  return res.json();
+}
+
+export async function registerUser(userData) {
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userData)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Registration failed' }));
+    throw new Error(err.error || 'Registration failed');
+  }
+  return res.json();
+}
+
+export async function fetchLoginHistory() {
+  const res = await fetch(`${API_BASE}/auth/logins`);
+  if (!res.ok) throw new Error('Failed to fetch login history');
+  return res.json();
+}
+
+export async function deleteUser(userId) {
+  const res = await fetch(`${API_BASE}/auth/users/${userId}`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to delete user' }));
+    throw new Error(err.error || 'Failed to delete user');
+  }
+  return res.json();
+}
+
+export async function deletePatient(patientId) {
+  const res = await fetch(`${API_BASE}/patients/${patientId}`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) throw new Error('Failed to delete patient');
+  return res.json();
+}
+
+export async function updatePatientWaitTime(patientId, checkedInMinutesAgo) {
+  const res = await fetch(`${API_BASE}/patients/${patientId}/wait-time`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ checkedInMinutesAgo })
+  });
+  if (!res.ok) throw new Error('Failed to update wait time');
+  return res.json();
+}
+
+export async function fetchDatabaseStats() {
+  const res = await fetch(`${API_BASE}/system/stats`);
+  if (!res.ok) throw new Error('Failed to fetch database stats');
+  return res.json();
+}
+
+// Real-Time Server-Sent Events (SSE) subscriber
+export function subscribeToRealTimeEvents(onEvent, onError) {
+  try {
+    const eventSource = new EventSource(`${API_BASE}/events`);
+
+    eventSource.onmessage = (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (onEvent) onEvent(payload);
+      } catch (err) {}
+    };
+
+    const eventNames = [
+      'connected',
+      'patient:created',
+      'patient:deleted',
+      'patient:wait_updated',
+      'patient:overridden',
+      'patient:reslotted',
+      'patient:assigned',
+      'vitals:stream',
+      'vitals:alert',
+      'room:updated',
+      'staff:reallocated',
+      'surge:spike',
+      'appointment:created',
+      'appointment:checked_in',
+      'user:registered',
+      'user:login',
+      'user:deleted'
+    ];
+
+    eventNames.forEach(evt => {
+      eventSource.addEventListener(evt, (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          if (onEvent) onEvent({ event: evt, ...payload });
+        } catch (err) {}
+      });
+    });
+
+    eventSource.onerror = (err) => {
+      if (onError) onError(err);
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  } catch (err) {
+    console.warn('SSE subscription error:', err);
+    return () => {};
+  }
+}

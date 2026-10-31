@@ -14,13 +14,21 @@ import {
   Zap, 
   UserPlus, 
   Clock,
-  HeartPulse
+  HeartPulse,
+  Calendar,
+  LogOut,
+  User,
+  Stethoscope,
+  UserCheck
 } from 'lucide-react';
 import TriageDashboard from './components/TriageDashboard';
 import RoomMatrix from './components/RoomMatrix';
 import PatientMobileApp from './components/PatientMobileApp';
 import SurgeControlCenter from './components/SurgeControlCenter';
 import AlertBanner from './components/AlertBanner';
+import AppointmentRegistration from './components/AppointmentRegistration';
+import LoginPortal from './components/LoginPortal';
+import CreateUserModal from './components/CreateUserModal';
 import { 
   INITIAL_PATIENTS, 
   INITIAL_ROOMS, 
@@ -37,37 +45,129 @@ export default function App() {
   const [staff, setStaff] = useState(INITIAL_STAFF);
   const [surgeData, setSurgeData] = useState(INITIAL_SURGE_HOURLY);
   const [auditLogs, setAuditLogs] = useState(INITIAL_AUDIT_LOGS);
+  const [appointments, setAppointments] = useState([
+    {
+      id: 'APT-201',
+      patientName: 'Samantha Reed',
+      age: 38,
+      gender: 'Female',
+      phone: '+1 (555) 234-5678',
+      email: 'samantha.reed@example.com',
+      department: 'Cardiology & Diagnostic ECG',
+      chiefComplaint: 'Intermittent heart palpitations during exercise',
+      esi: 3,
+      requiredEquipment: ['ECG'],
+      painLevel: 2,
+      appointmentTime: '19:30',
+      appointmentDate: 'Today',
+      slotType: 'Fastest Intake Window (Predicted Low Delay)',
+      estimatedWaitMins: 6,
+      distanceKm: 3.4,
+      geofencingOptIn: true,
+      digitalPassId: 'PASS-8842',
+      status: 'Scheduled'
+    },
+    {
+      id: 'APT-202',
+      patientName: 'Julian Morris',
+      age: 52,
+      gender: 'Male',
+      phone: '+1 (555) 876-5432',
+      email: 'julian.m@example.com',
+      department: 'Orthopedics & Diagnostic Imaging',
+      chiefComplaint: 'Chronic knee joint pain with swelling after long walk',
+      esi: 4,
+      requiredEquipment: ['Mobile X-Ray'],
+      painLevel: 5,
+      appointmentTime: '20:15',
+      appointmentDate: 'Today',
+      slotType: 'Off-Peak Optimal Slot',
+      estimatedWaitMins: 4,
+      distanceKm: 7.1,
+      geofencingOptIn: true,
+      digitalPassId: 'PASS-4190',
+      status: 'Scheduled'
+    }
+  ]);
 
-  const [activeTab, setActiveTab] = useState('triage');
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('ihms_current_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const saved = localStorage.getItem('ihms_current_user');
+      if (saved) {
+        const u = JSON.parse(saved);
+        if (u.role === 'patient') return 'patient';
+        if (u.role === 'receptionist') return 'appointments';
+      }
+    } catch (e) {}
+    return 'triage';
+  });
+
   const [isSimRunning, setIsSimRunning] = useState(true);
   const [simSpeed, setSimSpeed] = useState(1);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [dismissedAlertId, setDismissedAlertId] = useState(null);
   const [isStaffReallocated, setIsStaffReallocated] = useState(false);
+  const [isUserModalOpen, setIsUserModalOpen] = useState(false);
 
-  // Initial Load from SQLite Database
+  // Initial Load from SQLite Database & Real-Time SSE Listener
   useEffect(() => {
     async function loadFromDb() {
       try {
-        const [pData, rData, sData, sgData, logs] = await Promise.all([
+        const [pData, rData, sData, sgData, logs, aptData] = await Promise.all([
           api.fetchPatients(),
           api.fetchRooms(),
           api.fetchStaff(),
           api.fetchSurgeForecast(),
-          api.fetchAuditLogs()
+          api.fetchAuditLogs(),
+          api.fetchAppointments().catch(() => [])
         ]);
 
-        if (pData?.length) setPatients(pData);
+        if (pData?.length) {
+          setPatients(pData.map(p => ({
+            ...p,
+            waitSeconds: p.waitSeconds !== undefined ? p.waitSeconds : (p.checkedInMinutesAgo || 0) * 60
+          })));
+        }
         if (rData?.length) setRooms(rData);
         if (sData?.length) setStaff(sData);
         if (sgData?.length) setSurgeData(sgData);
         if (logs?.length) setAuditLogs(logs);
+        if (aptData?.length) setAppointments(aptData);
       } catch (err) {
         console.warn('SQLite API backend not reachable, using seeded local fallback:', err);
       }
     }
 
     loadFromDb();
+
+    // Subscribe to backend real-time push events
+    const unsubscribe = api.subscribeToRealTimeEvents((payload) => {
+      if (payload.event === 'patient:created' && payload.data) {
+        setPatients(prev => {
+          if (prev.some(p => p.id === payload.data.id)) return prev;
+          return [payload.data, ...prev];
+        });
+      } else if (payload.event === 'patient:deleted' && payload.data) {
+        setPatients(prev => prev.filter(p => p.id !== payload.data.patientId));
+      } else if (payload.event === 'patient:wait_updated' && payload.data) {
+        setPatients(prev => prev.map(p => p.id === payload.data.id ? { ...p, ...payload.data } : p));
+      } else if (payload.event === 'room:updated' && payload.data) {
+        api.fetchRooms().then(r => setRooms(r)).catch(() => {});
+      }
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
   // Identify any critical deteriorating patient waiting in queue
@@ -83,16 +183,16 @@ export default function App() {
     }
   }, [criticalPatient?.id, criticalPatient?.deltaV, soundEnabled]);
 
-  // Simulation Clock Tick Effect
+  // Simulation Clock Tick Effect - 1-Second Precise Real-Time Telemetry Ticker
   useEffect(() => {
     if (!isSimRunning) return;
 
     const interval = setInterval(() => {
-      // 1. Decrement sanitization countdown for pending rooms
+      // 1. Decrement sanitization countdown for pending rooms (1 second per tick * simSpeed)
       setRooms(prevRooms => 
         prevRooms.map(room => {
           if (room.status === 'Sanitization Pending' && room.remainingSanitizeSeconds > 0) {
-            const nextSecs = Math.max(0, room.remainingSanitizeSeconds - (2 * simSpeed));
+            const nextSecs = Math.max(0, room.remainingSanitizeSeconds - (1 * simSpeed));
             if (nextSecs === 0) {
               return {
                 ...room,
@@ -110,17 +210,30 @@ export default function App() {
         })
       );
 
-      // 2. Micro-fluctuate vitals for waiting patients (simulating IoT wristband streaming)
+      // 2. Real-time second-by-second waiting time telemetry & vital micro-fluctuations
       setPatients(prevPatients =>
         prevPatients.map(p => {
           if (p.status !== 'waiting') return p;
-          const currentHr = p.liveVitals?.hr || 75;
-          const jitter = Math.floor(Math.random() * 3) - 1;
-          const newHr = Math.max(50, Math.min(160, currentHr + jitter));
-          const newHistory = [...(p.liveVitals?.history || [currentHr]), newHr].slice(-8);
+
+          const curSecs = p.waitSeconds !== undefined 
+            ? p.waitSeconds 
+            : (p.checkedInMinutesAgo || 0) * 60;
+          const newSecs = curSecs + (1 * simSpeed);
+          const newMins = Math.floor(newSecs / 60);
+
+          // Micro-fluctuate vitals every 3 seconds
+          let newHr = p.liveVitals?.hr || 75;
+          let newHistory = p.liveVitals?.history || [newHr];
+          if (newSecs % 3 === 0) {
+            const jitter = Math.floor(Math.random() * 3) - 1;
+            newHr = Math.max(50, Math.min(160, (p.liveVitals?.hr || 75) + jitter));
+            newHistory = [...(p.liveVitals?.history || [newHr]), newHr].slice(-8);
+          }
 
           return {
             ...p,
+            waitSeconds: newSecs,
+            checkedInMinutesAgo: newMins,
             liveVitals: {
               ...p.liveVitals,
               hr: newHr,
@@ -129,7 +242,7 @@ export default function App() {
           };
         })
       );
-    }, 2500 / simSpeed);
+    }, 1000 / simSpeed);
 
     return () => clearInterval(interval);
   }, [isSimRunning, simSpeed]);
@@ -138,16 +251,53 @@ export default function App() {
   const addAuditLog = (action, patientId, patientName, details) => {
     const now = new Date();
     const timeStr = now.toTimeString().split(' ')[0];
+    const userLabel = currentUser ? `${currentUser.name} (${currentUser.role.toUpperCase()})` : 'Triage Nurse / AI Engine';
     const newLog = {
       id: `LOG-${Date.now()}`,
       timestamp: timeStr,
-      user: 'Triage Nurse / AI Engine',
+      user: userLabel,
       action,
       patientId: patientId || 'SYS',
       patientName: patientName || 'General Queue',
       details
     };
     setAuditLogs(prev => [newLog, ...prev]);
+  };
+
+  // User Authentication Handlers (Doctor, Receptionist, Patient)
+  const handleLogin = (user, remember = true) => {
+    setCurrentUser(user);
+    if (remember) {
+      localStorage.setItem('ihms_current_user', JSON.stringify(user));
+    }
+    // Set default active tab tailored to role
+    if (user.role === 'patient') {
+      setActiveTab('patient');
+    } else if (user.role === 'receptionist') {
+      setActiveTab('appointments');
+    } else {
+      setActiveTab('triage');
+    }
+
+    addAuditLog(
+      'USER_AUTHENTICATED',
+      user.patient_id || 'STATION',
+      user.name,
+      `User signed in as [${user.role.toUpperCase()}] • ${user.title}`
+    );
+  };
+
+  const handleLogout = () => {
+    if (currentUser) {
+      addAuditLog(
+        'USER_LOGOUT',
+        currentUser.patient_id || 'STATION',
+        currentUser.name,
+        `User session ended on workstation.`
+      );
+    }
+    setCurrentUser(null);
+    localStorage.removeItem('ihms_current_user');
   };
 
   // Interactive Scenario 1: Trigger Patient Vitals Deterioration (Persisted to SQLite)
@@ -333,7 +483,7 @@ export default function App() {
         'PATIENT_CHECKIN',
         created.id,
         created.name,
-        `Walk-in patient triaged (ESI ${patientData.esi}). Wristband ${created.wristbandId} paired. Persisted to SQLite database.`
+        `Walk-in patient triaged (ESI ${patientData.esi}). Wristband ${created.wristbandId} paired. Initial wait time: ${patientData.checkedInMinutesAgo || 0}m.`
       );
     } catch (e) {
       console.warn('API error, falling back to local state:', e);
@@ -349,8 +499,8 @@ export default function App() {
         esi: patientData.esi,
         chiefComplaint: patientData.chiefComplaint,
         requiredEquipment: patientData.requiredEquipment,
-        checkedInMinutesAgo: 0,
-        arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
+        checkedInMinutesAgo: parseInt(patientData.checkedInMinutesAgo) || 0,
+        arrivalTime: patientData.arrivalTime || new Date().toTimeString().split(' ')[0].slice(0, 5),
         status: 'waiting',
         assignedRoomId: null,
         manualOverrideBoost: 0,
@@ -373,6 +523,53 @@ export default function App() {
 
       setPatients(prev => [newPat, ...prev]);
     }
+  };
+
+  // Remove / Discharge Patient from Queue Handler (Persisted to SQLite)
+  const handleRemovePatient = async (patientId, patientName) => {
+    try {
+      await api.deletePatient(patientId);
+    } catch (e) {
+      console.warn('API error deleting patient:', e);
+    }
+
+    setPatients(prev => prev.filter(p => p.id !== patientId));
+
+    addAuditLog(
+      'PATIENT_DISCHARGED',
+      patientId,
+      patientName || 'Triage Patient',
+      `Patient removed/discharged from waiting queue. Average waiting time and remaining queue orders re-calculated.`
+    );
+  };
+
+  // Real-time Update Waiting Time Handler (Interactive Quick Adjust or Inline Edit)
+  const handleUpdatePatientWaitTime = async (patientId, newMinutes) => {
+    const mins = Math.max(0, parseInt(newMinutes, 10) || 0);
+
+    // Instantly update state for fluid real-time responsiveness
+    setPatients(prev => prev.map(p => {
+      if (p.id !== patientId) return p;
+      return {
+        ...p,
+        checkedInMinutesAgo: mins,
+        waitSeconds: mins * 60
+      };
+    }));
+
+    try {
+      await api.updatePatientWaitTime(patientId, mins);
+    } catch (e) {
+      console.warn('API error updating wait time:', e);
+    }
+
+    const patient = patients.find(p => p.id === patientId);
+    addAuditLog(
+      'WAIT_TIME_ADJUSTED',
+      patientId,
+      patient?.name || 'Waiting Patient',
+      `Waiting time adjusted in real time to ${mins} mins. Priority index and queue rank re-indexed.`
+    );
   };
 
   // Room Assignment Handler (Persisted to SQLite)
@@ -614,158 +811,488 @@ export default function App() {
     );
   };
 
+  // Appointment Handlers (Patient Self-Service Registration)
+  const handleRegisterAppointment = async (appointmentData) => {
+    try {
+      const created = await api.createAppointment(appointmentData);
+      setAppointments(prev => [created, ...prev]);
+      addAuditLog(
+        'APPOINTMENT_SCHEDULED',
+        created.id,
+        created.patientName,
+        `Self-service appointment registered (${created.department}, ${created.appointmentTime}). Digital Pass ${created.digitalPassId} issued.`
+      );
+      return created;
+    } catch (e) {
+      console.warn('API error, using local fallback:', e);
+      const newId = `APT-${Date.now().toString().slice(-4)}`;
+      const passId = `PASS-${Math.floor(1000 + Math.random() * 9000)}`;
+      const newAppt = {
+        ...appointmentData,
+        id: newId,
+        digitalPassId: passId,
+        status: 'Scheduled',
+        createdAt: new Date().toISOString()
+      };
+      setAppointments(prev => [newAppt, ...prev]);
+      addAuditLog(
+        'APPOINTMENT_SCHEDULED',
+        newId,
+        appointmentData.patientName,
+        `Self-service appointment registered (${appointmentData.department}, ${appointmentData.appointmentTime}). Digital Pass ${passId} issued.`
+      );
+      return newAppt;
+    }
+  };
+
+  const handleCheckInAppointment = async (appointmentId) => {
+    const appt = appointments.find(a => a.id === appointmentId);
+    if (!appt) return;
+
+    try {
+      await api.checkInAppointment(appointmentId);
+    } catch (e) {
+      console.warn('API error during checkin:', e);
+    }
+
+    setAppointments(prev =>
+      prev.map(a => a.id === appointmentId ? { ...a, status: 'Checked-In' } : a)
+    );
+
+    const newId = `P-${Date.now().toString().slice(-3)}`;
+    const wristbandId = `WB-${appt.digitalPassId ? appt.digitalPassId.slice(-4) : Math.floor(1000 + Math.random() * 9000)}`;
+
+    const newPat = {
+      id: newId,
+      name: appt.patientName,
+      age: appt.age,
+      gender: appt.gender,
+      wristbandId,
+      esi: appt.esi || 3,
+      chiefComplaint: appt.chiefComplaint,
+      requiredEquipment: appt.requiredEquipment || ['ENT Kit'],
+      checkedInMinutesAgo: 0,
+      arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
+      status: 'waiting',
+      assignedRoomId: null,
+      manualOverrideBoost: 0,
+      etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
+      liveVitals: {
+        hr: 78,
+        spo2: 98,
+        temp: 36.9,
+        pain: appt.painLevel || 2,
+        history: [78]
+      },
+      microWait: {
+        step: 1,
+        doctorEstMins: appt.estimatedWaitMins || 6,
+        sanitizationEstMins: 3,
+        currentDoctor: 'Dr. Michael Chen',
+        targetRoom: 'Assigned Intake Room'
+      }
+    };
+
+    setPatients(prev => [newPat, ...prev]);
+
+    addAuditLog(
+      'APPOINTMENT_CHECKED_IN',
+      newId,
+      appt.patientName,
+      `Self-registered patient checked in on arrival. Admitted to live triage queue with wristband ${wristbandId}.`
+    );
+
+    setActiveTab('triage');
+  };
+
+  const handleCancelAppointment = async (appointmentId) => {
+    try {
+      await api.cancelAppointment(appointmentId);
+    } catch (e) {
+      console.warn('API error:', e);
+    }
+
+    setAppointments(prev =>
+      prev.map(a => a.id === appointmentId ? { ...a, status: 'Cancelled' } : a)
+    );
+  };
+
+  // If user is not logged in, enforce login requirement with role selector
+  if (!currentUser) {
+    return <LoginPortal onLogin={handleLogin} />;
+  }
+
+  // Calculate role-specific tab permissions
+  const role = currentUser.role || 'doctor';
+  const isDoctor = role === 'doctor';
+  const isReceptionist = role === 'receptionist';
+  const isPatient = role === 'patient';
+
+  // Strictly resolve the active patient record for the currently logged-in patient
+  const loggedInPatient = React.useMemo(() => {
+    if (!currentUser || currentUser.role !== 'patient') return null;
+
+    // 1. Direct match by patient_id in patients waiting/active queue
+    if (currentUser.patient_id) {
+      const match = patients.find(
+        p => p.id === currentUser.patient_id || p.wristbandId === currentUser.patient_id
+      );
+      if (match) return match;
+    }
+
+    // 2. Match by exact or case-insensitive patient name
+    if (currentUser.name) {
+      const matchName = patients.find(
+        p => p.name && p.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase()
+      );
+      if (matchName) return matchName;
+    }
+
+    // 3. Match from appointments table if scheduled
+    if (appointments && appointments.length) {
+      const matchAppt = appointments.find(
+        a => (currentUser.patient_id && a.id === currentUser.patient_id) ||
+             (a.patientName && currentUser.name && a.patientName.trim().toLowerCase() === currentUser.name.trim().toLowerCase())
+      );
+      if (matchAppt) {
+        return {
+          id: matchAppt.id,
+          name: matchAppt.patientName,
+          age: matchAppt.age || 35,
+          gender: matchAppt.gender || 'Female',
+          wristbandId: matchAppt.digitalPassId || `WB-${Math.floor(1000 + Math.random() * 9000)}`,
+          esi: matchAppt.esi || 3,
+          chiefComplaint: matchAppt.chiefComplaint || 'Self-Scheduled Consultation',
+          requiredEquipment: matchAppt.requiredEquipment || [],
+          checkedInMinutesAgo: 0,
+          arrivalTime: matchAppt.appointmentTime || '19:30',
+          status: matchAppt.status === 'Checked-In' ? 'waiting' : 'scheduled',
+          assignedRoomId: null,
+          manualOverrideBoost: 0,
+          etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
+          liveVitals: {
+            hr: 76,
+            spo2: 98,
+            temp: 36.9,
+            pain: matchAppt.painLevel || 2,
+            deltaV: 0.0,
+            isCritical: false,
+            history: [74, 75, 76, 75, 76]
+          },
+          microWait: {
+            step: 1,
+            doctorEstMins: matchAppt.estimatedWaitMins || 6,
+            sanitizationEstMins: 2,
+            currentDoctor: 'Attending Physician',
+            targetRoom: matchAppt.department || 'Examination Suite'
+          }
+        };
+      }
+    }
+
+    // 4. Fallback: Synthesize personal verified patient profile for this exact logged-in user
+    return {
+      id: currentUser.patient_id || `P-${currentUser.id ? currentUser.id.slice(-4) : 'USER'}`,
+      name: currentUser.name,
+      age: 36,
+      gender: 'Patient',
+      wristbandId: currentUser.patient_id?.startsWith('WB-') ? currentUser.patient_id : `WB-${Math.floor(2000 + Math.random() * 7000)}`,
+      esi: 3,
+      chiefComplaint: currentUser.department ? `Intake: ${currentUser.department}` : 'Registered Patient Health Monitoring',
+      requiredEquipment: [],
+      checkedInMinutesAgo: 6,
+      arrivalTime: new Date().toTimeString().split(' ')[0].slice(0, 5),
+      status: 'waiting',
+      assignedRoomId: null,
+      manualOverrideBoost: 0,
+      etaDelay: { isDelayed: false, delayMins: 0, lateRisk: false },
+      liveVitals: {
+        hr: 78,
+        spo2: 98,
+        temp: 37.0,
+        pain: 2,
+        deltaV: 0.0,
+        isCritical: false,
+        history: [76, 77, 78, 77, 78]
+      },
+      microWait: {
+        step: 1,
+        doctorEstMins: 6,
+        sanitizationEstMins: 2,
+        currentDoctor: 'Dr. Michael Chen',
+        targetRoom: 'Room 103 (Diagnostic Suite)'
+      }
+    };
+  }, [currentUser, patients, appointments]);
+
+  // Track selected patient when a doctor inspects the live patient waiting screen
+  const [selectedWaitingPatientId, setSelectedWaitingPatientId] = useState(null);
+
+  // Active patient for waiting view (strictly loggedInPatient for patient role, or selected/top waiting patient for doctor)
+  const activePatientForWaiting = React.useMemo(() => {
+    if (currentUser?.role === 'patient') {
+      return loggedInPatient;
+    }
+    if (selectedWaitingPatientId) {
+      const match = patients.find(p => p.id === selectedWaitingPatientId);
+      if (match) return match;
+    }
+    return patients.find(p => p.status === 'waiting') || patients[0];
+  }, [currentUser, loggedInPatient, selectedWaitingPatientId, patients]);
+
   return (
     <div className="app-container">
-      {/* High-Priority Vital Alert Banner */}
-      <AlertBanner
-        criticalPatient={criticalPatient}
-        onReviewPatient={() => {
-          setActiveTab('triage');
-          setDismissedAlertId(criticalPatient?.id);
-        }}
-        onDismiss={() => setDismissedAlertId(criticalPatient?.id)}
-        soundEnabled={soundEnabled}
-        onToggleSound={() => setSoundEnabled(!soundEnabled)}
-      />
+      {/* High-Priority Vital Alert Banner (Visible to Clinical & Intake Staff) */}
+      {!isPatient && (
+        <AlertBanner
+          criticalPatient={criticalPatient}
+          onReviewPatient={() => {
+            setActiveTab('triage');
+            setDismissedAlertId(criticalPatient?.id);
+          }}
+          onDismiss={() => setDismissedAlertId(criticalPatient?.id)}
+          soundEnabled={soundEnabled}
+          onToggleSound={() => setSoundEnabled(!soundEnabled)}
+        />
+      )}
 
+      {/* Main App Header */}
       {/* Main App Header */}
       <header className="app-header">
         <div className="header-inner">
           <div className="brand-section">
             <div className="brand-icon">
-              <HeartPulse size={26} />
+              <HeartPulse size={22} />
             </div>
             <div className="brand-text">
               <h1>
                 IHMS
-                <span className="brand-badge">Intelligent Hospital Management</span>
+                <span className="brand-badge">Hospital</span>
               </h1>
-              <p>Dynamic Deterioration Early Warning • Equipment-Aware Turnover • Predictive Capacity</p>
+              <p className="brand-subtitle">Intelligent Hospital Management</p>
             </div>
           </div>
 
-          {/* Navigation Tabs */}
+          {/* Navigation Tabs (Dynamically Tailored by Role) */}
           <nav className="nav-tabs" role="tablist">
+            {/* Triage Tab: Doctor & Receptionist */}
+            {(isDoctor || isReceptionist) && (
+              <button
+                className={`nav-tab-btn ${activeTab === 'triage' ? 'active' : ''}`}
+                onClick={() => setActiveTab('triage')}
+                id="tab-triage"
+                title={isDoctor ? 'Clinical Triage & Queue' : 'Intake & Waiting Queue'}
+              >
+                <Activity size={15} />
+                <span>{isDoctor ? 'Triage Queue' : 'Intake Queue'}</span>
+                {patients.filter(p => p.status === 'waiting' && calculatePriorityIndex(p).isDeteriorating).length > 0 && (
+                  <span className="nav-badge-count">
+                    {patients.filter(p => p.status === 'waiting' && calculatePriorityIndex(p).isDeteriorating).length}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* Rooms Tab: Doctor & Receptionist */}
+            {(isDoctor || isReceptionist) && (
+              <button
+                className={`nav-tab-btn ${activeTab === 'rooms' ? 'active' : ''}`}
+                onClick={() => setActiveTab('rooms')}
+                id="tab-rooms"
+                title={isDoctor ? 'Rooms & Equipment Matrix' : 'Room Turnover & Cleaning'}
+              >
+                <DoorOpen size={15} />
+                <span>{isDoctor ? 'Rooms Matrix' : 'Room Cleaning'}</span>
+              </button>
+            )}
+
+            {/* Appointments Tab: Available to All, Primary for Receptionist */}
             <button
-              className={`nav-tab-btn ${activeTab === 'triage' ? 'active' : ''}`}
-              onClick={() => setActiveTab('triage')}
-              id="tab-triage"
+              className={`nav-tab-btn ${activeTab === 'appointments' ? 'active' : ''}`}
+              onClick={() => setActiveTab('appointments')}
+              id="tab-appointments"
+              title={isPatient ? 'Book / View Passes' : isReceptionist ? 'Appointment Check-In & Admissions' : 'Scheduled Intake'}
             >
-              <Activity size={16} />
-              Triage & Queue
-              {patients.filter(p => p.status === 'waiting' && calculatePriorityIndex(p).isDeteriorating).length > 0 && (
-                <span className="nav-badge-count">
-                  {patients.filter(p => p.status === 'waiting' && calculatePriorityIndex(p).isDeteriorating).length}
+              <Calendar size={15} />
+              <span>{isPatient ? 'My Passes' : isReceptionist ? 'Intake & Appts' : 'Appointments'}</span>
+              {appointments.filter(a => a.status === 'Scheduled').length > 0 && (
+                <span className="nav-badge-count" style={{ background: 'var(--primary)' }}>
+                  {appointments.filter(a => a.status === 'Scheduled').length}
                 </span>
               )}
             </button>
 
-            <button
-              className={`nav-tab-btn ${activeTab === 'rooms' ? 'active' : ''}`}
-              onClick={() => setActiveTab('rooms')}
-              id="tab-rooms"
-            >
-              <DoorOpen size={16} />
-              Rooms & Equipment
-            </button>
+            {/* Patient Waiting Interface Tab: Visible to Patient and Doctor Panel */}
+            {(isPatient || isDoctor) && (
+              <button
+                className={`nav-tab-btn ${activeTab === 'patient' ? 'active' : ''}`}
+                onClick={() => setActiveTab('patient')}
+                id="tab-patient"
+                title={isDoctor ? 'Inspect Patient Live Waiting Lounge Interface' : 'My Live Queue & Wristband Telemetry'}
+              >
+                <Smartphone size={15} />
+                <span>{isDoctor ? 'Patient Waiting View' : 'My Health Portal'}</span>
+                {isDoctor && patients.filter(p => p.status === 'waiting').length > 0 && (
+                  <span className="nav-badge-count" style={{ background: 'var(--secondary)' }}>
+                    {patients.filter(p => p.status === 'waiting').length}
+                  </span>
+                )}
+              </button>
+            )}
 
-            <button
-              className={`nav-tab-btn ${activeTab === 'patient' ? 'active' : ''}`}
-              onClick={() => setActiveTab('patient')}
-              id="tab-patient"
-            >
-              <Smartphone size={16} />
-              Patient Mobile App
-            </button>
-
-            <button
-              className={`nav-tab-btn ${activeTab === 'surge' ? 'active' : ''}`}
-              onClick={() => setActiveTab('surge')}
-              id="tab-surge"
-            >
-              <TrendingUp size={16} />
-              Surge & Capacity Control
-            </button>
+            {/* Surge Tab: Clinical Doctors / Capacity Officers */}
+            {isDoctor && (
+              <button
+                className={`nav-tab-btn ${activeTab === 'surge' ? 'active' : ''}`}
+                onClick={() => setActiveTab('surge')}
+                id="tab-surge"
+                title="Predictive Departmental Surge & Capacity Control"
+              >
+                <TrendingUp size={15} />
+                <span>Surge Control</span>
+              </button>
+            )}
           </nav>
+
+          {/* Header Right: Quick Actions & User Profile */}
+          <div className="header-right-section">
+            <button
+              type="button"
+              className="header-action-btn"
+              onClick={() => setIsUserModalOpen(true)}
+              title="Create new user account or manage registered users in database"
+              id="btn-header-manage-users"
+            >
+              <UserPlus size={13} color="var(--primary)" />
+              <span>Create User</span>
+            </button>
+
+            <div className="user-profile-header-chip">
+              <div 
+                className="user-profile-avatar"
+                style={{
+                  background: isDoctor ? '#0F52BA' : isReceptionist ? '#6366f1' : '#00A896'
+                }}
+              >
+                {isDoctor ? <Stethoscope size={15} /> : isReceptionist ? <UserCheck size={15} /> : <User size={15} />}
+              </div>
+              <div className="user-profile-info">
+                <span className="user-profile-name">{currentUser.name}</span>
+                <span className={`user-profile-role-badge role-badge-${currentUser.role}`}>
+                  {isDoctor ? 'Doctor' : isReceptionist ? 'Receptionist' : 'Patient'}
+                </span>
+              </div>
+              <button
+                className="user-logout-btn"
+                onClick={handleLogout}
+                title="Sign out from station and switch role"
+                id="btn-logout"
+              >
+                <LogOut size={13} />
+                <span>Sign Out</span>
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
-      {/* Simulation Controls Toolbar */}
-      <div className="sim-controls-bar">
-        <div className="sim-time-panel">
-          <div className="sim-clock-display">
-            <div className="sim-clock-pulse" />
-            <span>Telemetry Live: 19:04:22</span>
+      {/* Simulation Controls Toolbar (Or Friendly Patient Telemetry Bar) */}
+      {!isPatient ? (
+        <div className="sim-controls-bar">
+          <div className="sim-time-panel">
+            <div className="sim-clock-display">
+              <div className="sim-clock-pulse" />
+              <span>Telemetry Live: 19:04:22</span>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <button
+                className="sim-btn"
+                onClick={() => setIsSimRunning(!isSimRunning)}
+                title={isSimRunning ? 'Pause Engine' : 'Resume Engine'}
+                id="btn-toggle-sim"
+              >
+                {isSimRunning ? <Pause size={13} /> : <Play size={13} />}
+                {isSimRunning ? 'Pause' : 'Resume'}
+              </button>
+
+              <button
+                className="sim-btn"
+                onClick={() => setSimSpeed(simSpeed === 1 ? 2 : simSpeed === 2 ? 5 : 1)}
+                title="Simulation speed multiplier"
+              >
+                {simSpeed}x Speed
+              </button>
+            </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+          {/* Quick Scenario Triggers */}
+          <div className="sim-actions-group">
+            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--slate-500)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Simulate:
+            </span>
+
             <button
-              className="sim-btn"
-              onClick={() => setIsSimRunning(!isSimRunning)}
-              title={isSimRunning ? 'Pause Engine' : 'Resume Engine'}
-              id="btn-toggle-sim"
+              className="sim-btn sim-btn-danger"
+              onClick={handleTriggerVitalsSpike}
+              title="Demonstrate Novel Feature 3.1: Wristband vital drop & priority recalculation"
+              id="sim-btn-vitals-spike"
             >
-              {isSimRunning ? <Pause size={13} /> : <Play size={13} />}
-              {isSimRunning ? 'Pause' : 'Resume'}
+              <ShieldAlert size={13} />
+              <span>SpO2 Drop</span>
             </button>
 
             <button
               className="sim-btn"
-              onClick={() => setSimSpeed(simSpeed === 1 ? 2 : simSpeed === 2 ? 5 : 1)}
-              title="Simulation speed multiplier"
+              onClick={handleTriggerDelayScenario}
+              title="Demonstrate Novel Feature 3.5: GPS traffic delay & smart re-slotting"
+              id="sim-btn-delay"
             >
-              {simSpeed}x Speed
+              <Car size={13} color="var(--warning-amber)" />
+              <span>Traffic Delay</span>
+            </button>
+
+            <button
+              className="sim-btn"
+              onClick={handleCompleteSanitizationScenario}
+              title="Demonstrate Novel Feature 3.2: Room sanitized & constraint solver auto-assign"
+              id="sim-btn-sanitize"
+            >
+              <Sparkles size={13} color="var(--secondary)" />
+              <span>Room Cleaned</span>
+            </button>
+
+            <button
+              className="sim-btn sim-btn-primary"
+              onClick={handleTriggerSurgeScenario}
+              title="Demonstrate Novel Feature 3.4: Predictive surge alert & staff re-allocation"
+              id="sim-btn-surge"
+            >
+              <Zap size={13} />
+              <span>Surge Spike</span>
             </button>
           </div>
         </div>
-
-        {/* Quick Scenario Triggers to Demonstrate Novel Features */}
-        <div className="sim-actions-group">
-          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--slate-500)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Simulate Scenarios:
+      ) : (
+        <div style={{
+          background: 'var(--secondary-light)',
+          borderBottom: '1px solid rgba(0, 168, 150, 0.25)',
+          padding: '0.45rem 1.5rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: '0.78rem',
+          color: 'var(--secondary)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span className="live-dot" />
+            <strong>Patient Telemetry Active:</strong> Connected to Smart IoT Wristband ({currentUser.patient_id ? `ID: ${currentUser.patient_id}` : 'Paired via Bluetooth'})
+          </div>
+          <span style={{ color: 'var(--slate-600)', fontSize: '0.72rem' }}>
+            24/7 Clinical Monitoring • Tap below to update pain level or review doctor arrival
           </span>
-
-          <button
-            className="sim-btn sim-btn-danger"
-            onClick={handleTriggerVitalsSpike}
-            title="Demonstrate Novel Feature 3.1: Wristband vital drop & priority recalculation"
-            id="sim-btn-vitals-spike"
-          >
-            <ShieldAlert size={13} />
-            🚨 Trigger SpO2 Drop
-          </button>
-
-          <button
-            className="sim-btn"
-            onClick={handleTriggerDelayScenario}
-            title="Demonstrate Novel Feature 3.5: GPS traffic delay & smart re-slotting"
-            id="sim-btn-delay"
-          >
-            <Car size={13} color="var(--warning-amber)" />
-            🚗 Simulate Traffic Delay
-          </button>
-
-          <button
-            className="sim-btn"
-            onClick={handleCompleteSanitizationScenario}
-            title="Demonstrate Novel Feature 3.2: Room sanitized & constraint solver auto-assign"
-            id="sim-btn-sanitize"
-          >
-            <Sparkles size={13} color="var(--secondary)" />
-            ✨ Room 102 Cleaned
-          </button>
-
-          <button
-            className="sim-btn sim-btn-primary"
-            onClick={handleTriggerSurgeScenario}
-            title="Demonstrate Novel Feature 3.4: Predictive surge alert & staff re-allocation"
-            id="sim-btn-surge"
-          >
-            <Zap size={13} />
-            ⚡ Storm/Crash Surge
-          </button>
         </div>
-      </div>
+      )}
 
       {/* Main View Display */}
       <main className="main-view-container">
@@ -784,6 +1311,13 @@ export default function App() {
               }
             }}
             onAddPatient={handleAddPatient}
+            onRemovePatient={handleRemovePatient}
+            onUpdateWaitTime={handleUpdatePatientWaitTime}
+            onViewPatientWaitingScreen={(patientId) => {
+              setSelectedWaitingPatientId(patientId);
+              setActiveTab('patient');
+            }}
+            doctorUser={currentUser}
           />
         )}
 
@@ -797,12 +1331,17 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'patient' && (
+        {activeTab === 'patient' && activePatientForWaiting && (
           <PatientMobileApp
             patients={patients}
+            currentPatient={activePatientForWaiting}
             onUpdatePain={handleUpdatePain}
             onAcceptReslot={handleAcceptReslot}
             onDeclineReslot={handleDeclineReslot}
+            isPatientRole={isPatient}
+            isDoctorRole={isDoctor}
+            doctorUser={isDoctor ? currentUser : null}
+            onSelectPatient={(id) => setSelectedWaitingPatientId(id)}
           />
         )}
 
@@ -815,7 +1354,29 @@ export default function App() {
             isStaffReallocated={isStaffReallocated}
           />
         )}
+
+        {activeTab === 'appointments' && (
+          <AppointmentRegistration
+            appointments={appointments}
+            onRegisterAppointment={handleRegisterAppointment}
+            onCheckInAppointment={handleCheckInAppointment}
+            onCancelAppointment={handleCancelAppointment}
+          />
+        )}
       </main>
+
+      {/* Create User & Account Management Interface Modal */}
+      <CreateUserModal
+        isOpen={isUserModalOpen}
+        onClose={() => setIsUserModalOpen(false)}
+        onUserCreated={(newUser) => {
+          addAuditLog('USER_CREATED', newUser.id, newUser.name, `New ${newUser.role.toUpperCase()} account "${newUser.name}" saved to SQLite database.`);
+        }}
+        onSwitchUser={(user) => {
+          handleLogin(user, true);
+          setIsUserModalOpen(false);
+        }}
+      />
     </div>
   );
 }

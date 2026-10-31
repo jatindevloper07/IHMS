@@ -81,12 +81,72 @@ export function evaluateDeterioration(vitals = {}) {
 }
 
 /**
+ * Calculates accurate elapsed waiting minutes for a patient according to their
+ * arrival time, check-in history, or registration timestamp.
+ */
+export function calculatePatientWaitTime(patient, referenceClock) {
+  if (!patient) return 0;
+
+  // 1. If checkedInMinutesAgo is explicitly provided (as a number or numeric string), prioritize it
+  if (patient.checkedInMinutesAgo !== undefined && patient.checkedInMinutesAgo !== null && !isNaN(Number(patient.checkedInMinutesAgo))) {
+    return Math.max(0, Number(patient.checkedInMinutesAgo));
+  }
+
+  // 2. If arrivalTime is present (format "HH:MM")
+  if (patient.arrivalTime) {
+    try {
+      const parts = patient.arrivalTime.split(':');
+      if (parts.length >= 2) {
+        const arrH = parseInt(parts[0], 10);
+        const arrM = parseInt(parts[1], 10);
+        if (!isNaN(arrH) && !isNaN(arrM)) {
+          let curH, curM;
+          if (referenceClock) {
+            const refParts = referenceClock.split(':');
+            curH = parseInt(refParts[0], 10);
+            curM = parseInt(refParts[1], 10);
+          } else {
+            const now = new Date();
+            curH = now.getHours();
+            curM = now.getMinutes();
+          }
+
+          if (!isNaN(curH) && !isNaN(curM)) {
+            let diff = (curH * 60 + curM) - (arrH * 60 + arrM);
+            if (diff < 0) diff += 24 * 60; // Rollover past midnight
+            if (diff >= 0 && diff < 720) {
+              return Math.max(0, diff);
+            }
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 3. If created_at or createdAt is present
+  if (patient.createdAt || patient.created_at) {
+    try {
+      const created = new Date(patient.createdAt || patient.created_at).getTime();
+      if (!isNaN(created)) {
+        const diff = Math.floor((Date.now() - created) / 60000);
+        if (diff >= 0 && diff < 720) {
+          return diff;
+        }
+      }
+    } catch (e) {}
+  }
+
+  return 0;
+}
+
+/**
  * Computes Dynamic Priority Index P(t)
  * P(t) = w1 * U_clinical + w2 * T_elapsed + w3 * Delta_V
  */
 export function calculatePriorityIndex(patient, currentWaitMinutes) {
+  const waitMins = currentWaitMinutes ?? calculatePatientWaitTime(patient);
   const uClinical = calculateClinicalUrgency(patient.esi);
-  const tElapsed = calculateElapsedScore(currentWaitMinutes ?? patient.checkedInMinutesAgo);
+  const tElapsed = calculateElapsedScore(waitMins);
   const vitalsEval = evaluateDeterioration(patient.liveVitals);
   const deltaV = vitalsEval.deltaV;
 
@@ -104,6 +164,7 @@ export function calculatePriorityIndex(patient, currentWaitMinutes) {
 
   return {
     priorityIndex: finalP,
+    waitMinutes: waitMins,
     uClinical,
     tElapsed,
     deltaV,
@@ -111,6 +172,28 @@ export function calculatePriorityIndex(patient, currentWaitMinutes) {
     isCritical: vitalsEval.isCritical,
     reasons: vitalsEval.reasons,
   };
+}
+
+/**
+ * Calculates dynamic predicted wait time until physician consultation
+ * based on the patient's queue rank (order ahead) and ESI triage urgency.
+ * - When a new patient is added ahead in queue, lower ranked patients' estimated wait increases.
+ * - When a patient is removed, fast-tracked, or discharged, remaining patients' wait time decreases!
+ */
+export function calculateEstimatedWaitToConsult(rankIndex, esi = 3) {
+  // Base consultation buffer per patient ahead in queue (~5-7 mins)
+  const baseMinutesPerTurn = 6;
+  const clampedESI = Math.max(1, Math.min(5, parseInt(esi) || 3));
+  
+  // Urgent patients have shorter consult queues, lower priority wait a bit more
+  const urgencyFactor = clampedESI === 1 ? 0.35 : clampedESI === 2 ? 0.65 : clampedESI === 3 ? 1.0 : clampedESI === 4 ? 1.25 : 1.5;
+
+  if (rankIndex <= 0) {
+    return Math.max(2, Math.round(3 * urgencyFactor));
+  }
+
+  const estimated = Math.round((rankIndex * baseMinutesPerTurn) * urgencyFactor);
+  return Math.max(3, estimated);
 }
 
 /**

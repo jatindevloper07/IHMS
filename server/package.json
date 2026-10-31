@@ -1,4 +1,11 @@
 {
   "name": "ihms-server",
-  "type": "commonjs"
+  "version": "2.0.0",
+  "description": "Intelligent Hospital Management System - Modular Express & SQLite Backend",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  }
 }
